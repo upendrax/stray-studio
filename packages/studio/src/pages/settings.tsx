@@ -315,9 +315,13 @@ export default function Settings() {
               </Button>
               <Button
                 size="sm"
-                onClick={() => {
-                  saveSettings();
-                  toast("Settings saved");
+                onClick={async () => {
+                  try {
+                    await saveSettings();
+                    toast("Settings saved");
+                  } catch {
+                    toast("Couldn't save settings — try again");
+                  }
                 }}
               >
                 Save

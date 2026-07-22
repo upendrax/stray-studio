@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -21,9 +22,11 @@ import {
   type Product,
   type StoreSettings,
 } from "@/lib/mock-data";
+import { api } from "@/lib/api";
 
-// Mock-data store: keeps everything in React state so flows behave like the
-// real thing. Swapped for API calls once the core backend lands.
+// Transitional store. Settings are wired to the real API (#3b); the rest
+// (orders/products/discounts/categories/attributes) stay mock until their
+// pages are migrated. Seed values act as the pre-load fallback.
 
 interface StoreState {
   orders: Order[];
@@ -45,7 +48,7 @@ interface StoreState {
   deleteCategory: (path: string) => void;
   addProductsToCategory: (productIds: string[], path: string) => void;
   patchSettings: (patch: Partial<StoreSettings>) => void;
-  saveSettings: () => void;
+  saveSettings: () => Promise<void>;
   discardSettings: () => void;
   anonymizeCustomer: (name: string) => void;
 }
@@ -62,6 +65,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [settingsSnap, setSettingsSnap] = useState<string>(() =>
     JSON.stringify(seedSettings),
   );
+
+  // Load real settings on mount. The stored blob may be partial (first run is
+  // empty), so merge over the seed defaults; snapshot so we start un-dirty.
+  useEffect(() => {
+    let alive = true;
+    api
+      .get<{ settings: Partial<StoreSettings> }>("/api/admin/settings")
+      .then((res) => {
+        if (!alive) return;
+        const merged = { ...seedSettings, ...res.settings };
+        setSettings(merged);
+        setSettingsSnap(JSON.stringify(merged));
+      })
+      .catch(() => {
+        /* keep seed defaults if the request fails */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const actorLabel = "by Rashmi (owner)";
 
@@ -188,12 +211,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setSettings((prev) => ({ ...prev, ...patch }));
   }, []);
 
-  const saveSettings = useCallback(() => {
-    setSettings((prev) => {
-      setSettingsSnap(JSON.stringify(prev));
-      return prev;
-    });
-  }, []);
+  const saveSettings = useCallback(async () => {
+    const snapshot = JSON.stringify(settings);
+    await api.put("/api/admin/settings", settings);
+    setSettingsSnap(snapshot);
+  }, [settings]);
 
   const discardSettings = useCallback(() => {
     setSettings(JSON.parse(settingsSnap) as StoreSettings);
