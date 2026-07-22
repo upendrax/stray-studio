@@ -1,15 +1,15 @@
 import { useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { useAuth } from "@/state/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
-// Auth screens are mock-only until Better Auth is wired: "Sign in" navigates
-// straight into the Studio; the demo pill nav below the card jumps between
-// the three screens for review.
+// Login is wired to Better Auth (email + password, owner-only). Forgot/Reset
+// remain UI-only placeholders until the password-reset email flow lands.
 
 function AuthFrame({ title, subtitle, children }: {
   title: string;
@@ -58,17 +58,32 @@ function AuthFrame({ title, subtitle, children }: {
 
 export function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { status, signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [showPw, setShowPw] = useState(false);
-  const [err, setErr] = useState(false);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const signIn = () => {
+  // Already signed in — skip the form.
+  if (status === "authed") return <Navigate to="/" replace />;
+
+  const submit = async () => {
     if (!email.trim() || !pw) {
-      setErr(true);
+      setErr("Enter your email and password.");
       return;
     }
-    navigate("/");
+    setBusy(true);
+    setErr("");
+    const res = await signIn(email.trim(), pw);
+    setBusy(false);
+    if (res.ok) {
+      const from = (location.state as { from?: string } | null)?.from ?? "/";
+      navigate(from, { replace: true });
+    } else {
+      setErr(res.error ?? "Incorrect email or password.");
+    }
   };
 
   return (
@@ -79,6 +94,7 @@ export function Login() {
           <Input
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
             placeholder="you@example.com"
             className="h-9"
           />
@@ -90,7 +106,7 @@ export function Login() {
               type={showPw ? "text" : "password"}
               value={pw}
               onChange={(e) => setPw(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") signIn(); }}
+              onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
               className="h-9 pr-[52px]"
             />
             <button
@@ -101,9 +117,9 @@ export function Login() {
             </button>
           </div>
         </div>
-        {err && <div className="text-xs text-destructive">Incorrect email or password.</div>}
-        <Button size="sm" className="justify-center" onClick={signIn}>
-          Sign in
+        {err && <div className="text-xs text-destructive">{err}</div>}
+        <Button size="sm" className="justify-center" onClick={() => void submit()} disabled={busy}>
+          {busy ? "Signing in…" : "Sign in"}
         </Button>
         <Link
           to="/forgot"

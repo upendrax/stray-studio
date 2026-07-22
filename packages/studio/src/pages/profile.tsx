@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { useApp } from "@/state/app-context";
+import { useAuth } from "@/state/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -8,8 +8,9 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/page-header";
 
 export default function Profile() {
-  const { userName, userEmail } = useApp();
-  const [name, setName] = useState(userName);
+  const { user } = useAuth();
+  const [name, setName] = useState(user?.name ?? "");
+  const userEmail = user?.email ?? "";
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
   const [next2, setNext2] = useState("");

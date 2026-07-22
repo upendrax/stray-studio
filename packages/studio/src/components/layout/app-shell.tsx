@@ -13,6 +13,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { useApp } from "@/state/app-context";
+import { useAuth } from "@/state/auth-context";
 import { useStore } from "@/state/store-context";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,11 +35,15 @@ interface NavDef {
 }
 
 export function AppShell() {
-  const { theme, toggleTheme, storeName, userName, userEmail } = useApp();
+  const { theme, toggleTheme, storeName } = useApp();
+  const { user, signOut } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
 
   const { pendingCount } = useStore();
+
+  const userName = user?.name ?? "—";
+  const userEmail = user?.email ?? "";
 
   const nav: NavDef[] = useMemo(
     () => [
@@ -228,8 +233,8 @@ export function AppShell() {
               <DropdownMenuItem asChild>
                 <Link to="/profile">Profile</Link>
               </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <Link to="/login">Sign out</Link>
+              <DropdownMenuItem onClick={() => void signOut()}>
+                Sign out
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

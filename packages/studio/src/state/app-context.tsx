@@ -14,8 +14,6 @@ interface AppState {
   theme: Theme;
   toggleTheme: () => void;
   storeName: string;
-  userName: string;
-  userEmail: string;
 }
 
 const AppContext = createContext<AppState | null>(null);
@@ -39,9 +37,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => ({
       theme,
       toggleTheme,
+      // TODO(#3b): source from store settings once the settings API is wired.
       storeName: "Salt & Cotton",
-      userName: "Rashmi Fonseka",
-      userEmail: "rashmi@saltandcotton.lk",
     }),
     [theme, toggleTheme],
   );
