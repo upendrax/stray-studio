@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local development (never commit .dev.vars)
+BETTER_AUTH_SECRET=dev-secret-change-me
+RESEND_API_KEY=
+PAYHERE_MERCHANT_SECRET=

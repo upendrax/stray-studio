@@ -1,0 +1,19 @@
+{
+  "name": "stray",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Stray Studio — lightweight, reusable ecommerce CMS on Cloudflare",
+  "packageManager": "pnpm@10.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:core": "pnpm --filter @stray/core dev",
+    "dev:studio": "pnpm --filter @stray/studio dev",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

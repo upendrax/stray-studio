@@ -1,0 +1,28 @@
+// Per-client deploys copy this file and change: name, database_id, bucket_name, APP_URL.
+// A provisioning script will automate that later.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "stray-core",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "stray-db",
+      "database_id": "REPLACE_ON_PROVISION",
+      "migrations_dir": "drizzle"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "IMAGES",
+      "bucket_name": "stray-images"
+    }
+  ],
+  "vars": {
+    "APP_URL": "http://localhost:8787"
+  }
+  // Secrets (set via `wrangler secret put` / .dev.vars locally):
+  //   BETTER_AUTH_SECRET, RESEND_API_KEY, PAYHERE_MERCHANT_SECRET
+}
