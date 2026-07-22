@@ -3,6 +3,8 @@ import { sessionMiddleware, requireOwner } from "../middleware/auth";
 import { categoryRoutes } from "./categories";
 import { attributeRoutes } from "./attributes";
 import { productRoutes } from "./products";
+import { discountRoutes } from "./discounts";
+import { settingsRoutes } from "./settings";
 import type { AppEnv } from "../lib/context";
 
 // Everything under /api/admin/* is owner-only. Resource routers
@@ -17,5 +19,7 @@ admin.get("/me", (c) => c.json({ user: c.get("user") }));
 admin.route("/categories", categoryRoutes);
 admin.route("/attributes", attributeRoutes);
 admin.route("/products", productRoutes);
+admin.route("/discounts", discountRoutes);
+admin.route("/settings", settingsRoutes);
 
 export { admin as adminRoutes };
