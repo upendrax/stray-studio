@@ -4,11 +4,21 @@ import { emailOTP } from "better-auth/plugins";
 import { createDb } from "./db";
 import type { Env } from "./env";
 
+// Trusted origins for CORS + Better Auth cookie handling: the API itself,
+// the Studio SPA (Vite dev), and the Astro storefront (dev). Per-client
+// production origins get appended from APP_URL.
+export function trustedOrigins(env: Env) {
+  return [env.APP_URL, "http://localhost:5173", "http://localhost:4321"];
+}
+
 // Auth model:
 // - Admins (role owner/staff): email + password. No self sign-up — accounts
 //   come from store provisioning (owner) or staff invites.
 // - Customers: passwordless email OTP (storefront account pages).
-export function createAuth(env: Env) {
+//
+// `allowSignUp` is a server-side escape hatch used ONLY by the localhost dev
+// owner-seed route; the public sign-up endpoint stays disabled everywhere else.
+export function createAuth(env: Env, opts?: { allowSignUp?: boolean }) {
   const db = createDb(env.DB);
 
   return betterAuth({
@@ -16,9 +26,10 @@ export function createAuth(env: Env) {
     secret: env.BETTER_AUTH_SECRET,
     baseURL: env.APP_URL,
     basePath: "/api/auth",
+    trustedOrigins: trustedOrigins(env),
     emailAndPassword: {
       enabled: true,
-      disableSignUp: true,
+      disableSignUp: !opts?.allowSignUp,
     },
     user: {
       additionalFields: {

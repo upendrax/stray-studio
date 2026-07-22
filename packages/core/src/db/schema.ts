@@ -22,6 +22,13 @@ const updatedAt = () =>
     .notNull()
     .$defaultFn(() => Date.now());
 
+// Better Auth hands the drizzle adapter JS `Date` objects for its date columns.
+// timestamp_ms mode makes drizzle serialize them to integer unix-ms (same
+// on-disk INTEGER type as the rest of the schema — no DDL/migration change).
+const authTs = (name: string) => integer(name, { mode: "timestamp_ms" });
+const authCreatedAt = () => authTs("created_at").notNull().$defaultFn(() => new Date());
+const authUpdatedAt = () => authTs("updated_at").notNull().$defaultFn(() => new Date());
+
 // ---------------------------------------------------------------------------
 // Auth (Better Auth managed tables + role extension)
 // Roles: "owner" | "staff" | "customer"
@@ -40,21 +47,21 @@ export const user = sqliteTable("user", {
     .notNull()
     .default("customer"),
   phone: text("phone"),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
+  createdAt: authCreatedAt(),
+  updatedAt: authUpdatedAt(),
 });
 
 export const session = sqliteTable("session", {
   id: id(),
-  expiresAt: integer("expires_at").notNull(),
+  expiresAt: authTs("expires_at").notNull(),
   token: text("token").notNull().unique(),
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
   userId: text("user_id")
     .notNull()
     .references(() => user.id, { onDelete: "cascade" }),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
+  createdAt: authCreatedAt(),
+  updatedAt: authUpdatedAt(),
 });
 
 export const account = sqliteTable("account", {
@@ -67,21 +74,21 @@ export const account = sqliteTable("account", {
   accessToken: text("access_token"),
   refreshToken: text("refresh_token"),
   idToken: text("id_token"),
-  accessTokenExpiresAt: integer("access_token_expires_at"),
-  refreshTokenExpiresAt: integer("refresh_token_expires_at"),
+  accessTokenExpiresAt: authTs("access_token_expires_at"),
+  refreshTokenExpiresAt: authTs("refresh_token_expires_at"),
   scope: text("scope"),
   password: text("password"),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
+  createdAt: authCreatedAt(),
+  updatedAt: authUpdatedAt(),
 });
 
 export const verification = sqliteTable("verification", {
   id: id(),
   identifier: text("identifier").notNull(),
   value: text("value").notNull(),
-  expiresAt: integer("expires_at").notNull(),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
+  expiresAt: authTs("expires_at").notNull(),
+  createdAt: authCreatedAt(),
+  updatedAt: authUpdatedAt(),
 });
 
 export const staffInvite = sqliteTable("staff_invite", {
@@ -89,9 +96,9 @@ export const staffInvite = sqliteTable("staff_invite", {
   email: text("email").notNull(),
   token: text("token").notNull().unique(),
   role: text("role", { enum: ["staff"] }).notNull().default("staff"),
-  expiresAt: integer("expires_at").notNull(),
-  acceptedAt: integer("accepted_at"),
-  createdAt: createdAt(),
+  expiresAt: authTs("expires_at").notNull(),
+  acceptedAt: authTs("accepted_at"),
+  createdAt: authCreatedAt(),
 });
 
 // ---------------------------------------------------------------------------
