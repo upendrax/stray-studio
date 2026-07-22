@@ -46,7 +46,7 @@ interface Row {
 }
 
 export function CategoriesTab() {
-  const { categories, products, deleteCategory } = useStore();
+  const { categories, categoriesLoading, deleteCategory } = useStore();
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     Tops: true,
@@ -54,6 +54,7 @@ export function CategoriesTab() {
   });
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<Sort>("tree");
 
@@ -61,13 +62,17 @@ export function CategoriesTab() {
   for (const c of categories) byPath.set(c.path, c);
 
   const leaf = (path: string) => path.split(" > ").pop() ?? path;
-  const countNum = (path: string) =>
-    products.filter(
-      (x) => x.cats.includes(path) || x.cats.some((cc) => cc.startsWith(`${path} > `)),
-    ).length;
+  // Counts come from the API's per-category productCount: direct on the row,
+  // plus everything under it summed across the derived subtree.
+  const directCount = (path: string) => byPath.get(path)?.productCount ?? 0;
+  const descCount = (path: string) =>
+    categories
+      .filter((c) => c.path.startsWith(`${path} > `))
+      .reduce((n, c) => n + (c.productCount ?? 0), 0);
+  const countNum = (path: string) => directCount(path) + descCount(path);
   const countLabel = (path: string) => {
-    const own = products.filter((x) => x.cats.includes(path)).length;
-    const desc = products.filter((x) => x.cats.some((cc) => cc.startsWith(`${path} > `))).length;
+    const own = directCount(path);
+    const desc = descCount(path);
     return own + (desc ? ` (+${desc})` : "");
   };
 
@@ -107,11 +112,27 @@ export function CategoriesTab() {
   const selectedPaths = Object.keys(selected).filter((p) => selected[p]);
   const allSelected = rows.length > 0 && rows.every((r) => selected[r.cat.path]);
 
-  const bulkDelete = () => {
-    [...selectedPaths]
-      .sort((a, b) => b.split(" > ").length - a.split(" > ").length)
-      .forEach((p) => deleteCategory(p));
-    toast(`${selectedPaths.length} categor${selectedPaths.length === 1 ? "y" : "ies"} deleted`);
+  const bulkDelete = async () => {
+    // Deepest first so a child is removed before its parent reparents it.
+    const ordered = [...selectedPaths].sort(
+      (a, b) => b.split(" > ").length - a.split(" > ").length,
+    );
+    setDeleting(true);
+    let deleted = 0;
+    let failed = 0;
+    for (const p of ordered) {
+      try {
+        await deleteCategory(p);
+        deleted++;
+      } catch {
+        failed++;
+      }
+    }
+    setDeleting(false);
+    toast(
+      `${deleted} categor${deleted === 1 ? "y" : "ies"} deleted` +
+        (failed > 0 ? ` — ${failed} failed` : ""),
+    );
     setSelected({});
     setConfirmDelete(false);
   };
@@ -168,7 +189,11 @@ export function CategoriesTab() {
         )}
       </div>
 
-      {rows.length > 0 ? (
+      {categoriesLoading ? (
+        <Card className="flex items-center justify-center px-6 py-12 text-muted-foreground shadow-sm">
+          <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+        </Card>
+      ) : rows.length > 0 ? (
         <Card className="gap-0 overflow-hidden py-0">
           <Table>
             <TableHeader>
@@ -303,11 +328,11 @@ export function CategoriesTab() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)}>
+            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)} disabled={deleting}>
               Cancel
             </Button>
-            <Button size="sm" variant="destructive" onClick={bulkDelete}>
-              Delete
+            <Button size="sm" variant="destructive" onClick={bulkDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

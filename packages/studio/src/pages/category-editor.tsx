@@ -3,7 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, ImagePlus } from "lucide-react";
 import { useStore } from "@/state/store-context";
-import { makeCategory, pathSlug, slugify, type Category } from "@/lib/mock-data";
+import { ApiError } from "@/lib/api";
+import { makeCategory, slugify, type Category } from "@/lib/mock-data";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -80,6 +81,7 @@ export default function CategoryEditor() {
   );
   const [d, setD] = useState<Draft>(initial);
   const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -104,35 +106,48 @@ export default function CategoryEditor() {
       : null;
   const invalid = !d.name.trim() || !!nameErr;
 
+  // This category's own URL handle (a single segment; the server dedupes it).
   const previewSlug =
-    d.slugTouched && d.slug.trim() ? d.slug.trim() : pathSlug(newPath || d.name.trim());
+    d.slugTouched && d.slug.trim() ? d.slug.trim() : slugify(d.name.trim());
 
   const back = () => {
     if (dirty) setConfirmDiscard(true);
     else navigate("/products/categories");
   };
 
-  const save = () => {
-    if (invalid) return;
-    upsertCategory(
-      makeCategory(newPath, {
-        description: d.description.trim(),
-        hasCover: d.hasCover,
-        slug: d.slugTouched && d.slug.trim() ? d.slug.trim() : pathSlug(newPath),
-        metaTitle: d.metaTitle.trim(),
-        metaDesc: d.metaDesc.trim(),
-      }),
-      originalPath ?? undefined,
-    );
-    setDirty(false);
-    toast(originalPath ? "Category saved" : "Category created");
-    navigate("/products/categories");
+  const save = async () => {
+    if (invalid || saving) return;
+    setSaving(true);
+    try {
+      await upsertCategory(
+        makeCategory(newPath, {
+          description: d.description.trim(),
+          hasCover: d.hasCover,
+          slug: d.slugTouched && d.slug.trim() ? d.slug.trim() : slugify(d.name.trim()),
+          metaTitle: d.metaTitle.trim(),
+          metaDesc: d.metaDesc.trim(),
+        }),
+        originalPath ?? undefined,
+      );
+      setDirty(false);
+      toast(originalPath ? "Category saved" : "Category created");
+      navigate("/products/categories");
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't save category");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const remove = () => {
-    if (originalPath) deleteCategory(originalPath);
-    toast("Category deleted");
-    navigate("/products/categories");
+  const remove = async () => {
+    try {
+      if (originalPath) await deleteCategory(originalPath);
+      toast("Category deleted");
+      navigate("/products/categories");
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't delete category");
+      setConfirmDelete(false);
+    }
   };
 
   return (
@@ -252,7 +267,7 @@ export default function CategoryEditor() {
                 <input
                   value={previewSlug}
                   onChange={(e) =>
-                    patch({ slug: slugPath(e.target.value), slugTouched: true })
+                    patch({ slug: slugify(e.target.value), slugTouched: true })
                   }
                   className="h-9 w-full bg-transparent font-mono outline-none"
                 />
@@ -299,11 +314,11 @@ export default function CategoryEditor() {
           <div className="pointer-events-auto flex items-center gap-3 rounded-[10px] border bg-popover py-2 pl-4 pr-2 shadow-lg">
             <span className="text-[13px]">Unsaved changes</span>
             <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" onClick={() => setConfirmDiscard(true)}>
+              <Button variant="outline" size="sm" onClick={() => setConfirmDiscard(true)} disabled={saving}>
                 Discard
               </Button>
-              <Button size="sm" onClick={save} disabled={invalid}>
-                Save
+              <Button size="sm" onClick={save} disabled={invalid || saving}>
+                {saving ? "Saving…" : "Save"}
               </Button>
             </div>
           </div>
@@ -357,12 +372,4 @@ export default function CategoryEditor() {
       </Dialog>
     </div>
   );
-}
-
-function slugPath(s: string): string {
-  return s
-    .split("/")
-    .map((seg) => slugify(seg))
-    .filter(Boolean)
-    .join("/");
 }

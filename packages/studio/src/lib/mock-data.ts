@@ -318,12 +318,13 @@ export function discountTypeLabel(d: Discount): string {
 // ---------------------------------------------------------------------------
 
 export interface Category {
-  path: string; // "Tops > T-Shirts" — identity + hierarchy
+  path: string; // "Tops > T-Shirts" — identity + hierarchy (derived from the id tree)
   description: string; // shown on the storefront category page
-  hasCover: boolean; // mock: whether a banner image was set
-  slug: string; // storefront URL, defaults from path, editable
+  hasCover: boolean; // whether a banner image is set (derived from coverImageKey)
+  slug: string; // this category's own URL handle (flat, API-owned + deduped)
   metaTitle: string;
   metaDesc: string;
+  productCount?: number; // direct product links (from the API); drives the count column
 }
 
 export function slugify(s: string): string {

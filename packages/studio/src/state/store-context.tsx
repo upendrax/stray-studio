@@ -9,12 +9,10 @@ import {
   type ReactNode,
 } from "react";
 import {
-  seedCategories,
   seedDiscounts,
   seedOrders,
   seedProducts,
   seedSettings,
-  pathSlug,
   type AttributeDef,
   type AttributeValue,
   type Category,
@@ -74,6 +72,65 @@ function attributeBody(rec: AttributeDef) {
   };
 }
 
+// Categories: the API is an id/parentId tree; the Studio UI works in "A > B"
+// path strings. Derive each path by walking parentId to the root, and keep a
+// path -> id map so path-keyed mutations can address the right row.
+interface ApiCategory {
+  id: string;
+  name: string;
+  slug: string;
+  parentId: string | null;
+  description: string | null;
+  coverImageKey: string | null;
+  sortOrder: number;
+  metaTitle: string | null;
+  metaDescription: string | null;
+  productCount?: number;
+}
+
+function deriveCategories(rows: ApiCategory[]): {
+  list: Category[];
+  pathToId: Map<string, string>;
+} {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const pathOf = (row: ApiCategory): string => {
+    const seg: string[] = [];
+    const seen = new Set<string>();
+    let cur: ApiCategory | undefined = row;
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      seg.unshift(cur.name);
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    return seg.join(" > ");
+  };
+  const list: Category[] = [];
+  const pathToId = new Map<string, string>();
+  for (const r of rows) {
+    const path = pathOf(r);
+    pathToId.set(path, r.id);
+    list.push({
+      path,
+      description: r.description ?? "",
+      hasCover: !!r.coverImageKey,
+      slug: r.slug,
+      metaTitle: r.metaTitle ?? "",
+      metaDesc: r.metaDescription ?? "",
+      productCount: r.productCount ?? 0,
+    });
+  }
+  list.sort((a, b) => a.path.localeCompare(b.path));
+  return { list, pathToId };
+}
+
+// Split a Studio path into its leaf name and parent path ("" = top level).
+function splitPath(path: string): { name: string; parentPath: string } {
+  const i = path.lastIndexOf(" > ");
+  return i === -1
+    ? { name: path, parentPath: "" }
+    : { name: path.slice(i + 3), parentPath: path.slice(0, i) };
+}
+
 interface StoreState {
   orders: Order[];
   products: Product[];
@@ -81,6 +138,7 @@ interface StoreState {
   categories: Category[];
   attributes: AttributeDef[];
   attributesLoading: boolean;
+  categoriesLoading: boolean;
   settings: StoreSettings;
   settingsDirty: boolean;
   pendingCount: number;
@@ -93,8 +151,8 @@ interface StoreState {
   // need the server-assigned id (e.g. the product editor's inline "New attribute").
   upsertAttribute: (rec: AttributeDef) => Promise<AttributeDef>;
   deleteAttribute: (id: string) => Promise<void>;
-  upsertCategory: (cat: Category, originalPath?: string) => void;
-  deleteCategory: (path: string) => void;
+  upsertCategory: (cat: Category, originalPath?: string) => Promise<void>;
+  deleteCategory: (path: string) => Promise<void>;
   addProductsToCategory: (productIds: string[], path: string) => void;
   patchSettings: (patch: Partial<StoreSettings>) => void;
   saveSettings: () => Promise<void>;
@@ -109,7 +167,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [orders, setOrders] = useState<Order[]>(seedOrders);
   const [products, setProducts] = useState<Product[]>(seedProducts);
   const [discounts, setDiscounts] = useState<Discount[]>(seedDiscounts);
-  const [categories, setCategories] = useState<Category[]>(seedCategories);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  // path -> server id, rebuilt on every categories load; lets path-keyed
+  // mutations resolve the row (and a new category's parent) to an API id.
+  const catPathToId = useRef<Map<string, string>>(new Map());
   const [attributes, setAttributes] = useState<AttributeDef[]>([]);
   const [attributesLoading, setAttributesLoading] = useState(true);
   // Mirror for the create-vs-update decision without re-creating the callback.
@@ -119,6 +181,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [settingsSnap, setSettingsSnap] = useState<string>(() =>
     JSON.stringify(seedSettings),
   );
+
+  // Fetch the category tree and re-derive paths + the path->id map. Called on
+  // load and after every mutation (categories are few, so a full refetch keeps
+  // slugs/reparenting/depth exactly in sync with the server).
+  const reloadCategories = useCallback(async () => {
+    const res = await api.get<{ categories: ApiCategory[] }>("/api/admin/categories");
+    const { list, pathToId } = deriveCategories(res.categories);
+    catPathToId.current = pathToId;
+    setCategories(list);
+  }, []);
 
   // Load API-backed data once the session is confirmed. Gating on `authed`
   // avoids a wasted 401 on the login screen and — since this provider mounts
@@ -156,10 +228,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (alive) setAttributesLoading(false);
       });
 
+    // Categories: the id/parentId tree, derived into Studio paths.
+    reloadCategories()
+      .catch(() => {
+        /* leave categories empty on failure */
+      })
+      .finally(() => {
+        if (alive) setCategoriesLoading(false);
+      });
+
     return () => {
       alive = false;
     };
-  }, [status]);
+  }, [status, reloadCategories]);
 
   const actorLabel = "by Rashmi (owner)";
 
@@ -222,63 +303,69 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setAttributes((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
-  // Create, or update (with rename when originalPath differs). Renaming a
-  // category re-paths its descendants and every product's assignment.
-  const upsertCategory = useCallback((cat: Category, originalPath?: string) => {
-    const renaming = originalPath && originalPath !== cat.path;
-    if (renaming) {
-      const remap = (c: string) =>
-        c === originalPath
-          ? cat.path
-          : c.startsWith(`${originalPath} > `)
-            ? cat.path + c.slice(originalPath.length)
-            : c;
-      setCategories((prev) =>
-        prev.map((x) =>
-          x.path === originalPath || x.path.startsWith(`${originalPath} > `)
-            ? { ...x, path: remap(x.path), slug: pathSlug(remap(x.path)) }
-            : x,
-        ).map((x) => (x.path === cat.path ? cat : x)),
-      );
-      setProducts((prev) => prev.map((p) => ({ ...p, cats: p.cats.map(remap) })));
-      return;
-    }
-    setCategories((prev) =>
-      prev.some((x) => x.path === cat.path)
-        ? prev.map((x) => (x.path === cat.path ? cat : x))
-        : [...prev, cat],
-    );
-  }, []);
-
-  const deleteCategory = useCallback((path: string) => {
-    // Children move up one level — never a cascade delete.
-    const parent = path.includes(" > ") ? path.slice(0, path.lastIndexOf(" > ")) : "";
-    const remap = (c: string): string | null =>
-      c === path
-        ? null
-        : c.startsWith(`${path} > `)
-          ? (parent ? `${parent} > ` : "") + c.slice(path.length + 3)
-          : c;
-    setCategories((prev) => {
-      const seen = new Set<string>();
-      const out: Category[] = [];
-      for (const x of prev) {
-        const np = remap(x.path);
-        if (!np || seen.has(np)) continue;
-        seen.add(np);
-        out.push(np === x.path ? x : { ...x, path: np, slug: pathSlug(np) });
+  // Create (no originalPath) or update. Name + parent are derived from the
+  // Studio path; the server owns slug (deduped) and reparents descendants, so
+  // we just POST/PATCH the one row and refetch the tree.
+  const upsertCategory = useCallback<StoreState["upsertCategory"]>(
+    async (cat, originalPath) => {
+      const { name, parentPath } = splitPath(cat.path);
+      const parentId = parentPath ? catPathToId.current.get(parentPath) ?? null : null;
+      const body = {
+        name,
+        parentId,
+        slug: cat.slug || undefined, // blank -> server slugifies the name
+        description: cat.description || null,
+        metaTitle: cat.metaTitle || null,
+        metaDescription: cat.metaDesc || null,
+      };
+      const id = originalPath ? catPathToId.current.get(originalPath) : undefined;
+      if (id) {
+        await api.patch(`/api/admin/categories/${id}`, body);
+      } else {
+        await api.post("/api/admin/categories", body);
       }
-      return out;
-    });
-    setProducts((prev) =>
-      prev.map((p) => ({
-        ...p,
-        cats: p.cats
-          .map(remap)
-          .filter((c, i, a): c is string => !!c && a.indexOf(c) === i),
-      })),
-    );
-  }, []);
+      // Keep still-mock product assignments aligned when the path changes
+      // (rename or move) — the same prefix remap the server applies to the tree.
+      if (originalPath && originalPath !== cat.path) {
+        const remap = (c: string) =>
+          c === originalPath
+            ? cat.path
+            : c.startsWith(`${originalPath} > `)
+              ? cat.path + c.slice(originalPath.length)
+              : c;
+        setProducts((prev) => prev.map((p) => ({ ...p, cats: p.cats.map(remap) })));
+      }
+      await reloadCategories();
+    },
+    [reloadCategories],
+  );
+
+  const deleteCategory = useCallback<StoreState["deleteCategory"]>(
+    async (path) => {
+      const id = catPathToId.current.get(path);
+      if (!id) return;
+      // Server moves children (and their product links) up to this node's
+      // parent — never a cascade. Mirror that on still-mock product cats.
+      await api.del(`/api/admin/categories/${id}`);
+      const parent = path.includes(" > ") ? path.slice(0, path.lastIndexOf(" > ")) : "";
+      const remap = (c: string): string | null =>
+        c === path
+          ? null
+          : c.startsWith(`${path} > `)
+            ? (parent ? `${parent} > ` : "") + c.slice(path.length + 3)
+            : c;
+      setProducts((prev) =>
+        prev.map((p) => ({
+          ...p,
+          cats: p.cats
+            .map(remap)
+            .filter((c, i, a): c is string => !!c && a.indexOf(c) === i),
+        })),
+      );
+      await reloadCategories();
+    },
+    [reloadCategories],
+  );
 
   const addProductsToCategory = useCallback(
     (productIds: string[], path: string) => {
@@ -324,6 +411,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       products,
       discounts,
       categories,
+      categoriesLoading,
       attributes,
       attributesLoading,
       settings,
@@ -345,7 +433,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       anonymizeCustomer,
     }),
     [
-      orders, products, discounts, categories, attributes, attributesLoading, settings, settingsSnap, actorLabel,
+      orders, products, discounts, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
       mutateOrder, updateProducts, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
       upsertCategory, addProductsToCategory, deleteCategory, patchSettings, saveSettings,
       discardSettings, anonymizeCustomer,
