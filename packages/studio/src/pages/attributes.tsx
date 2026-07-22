@@ -41,15 +41,15 @@ const HEAD = "text-[11px] uppercase tracking-wider text-muted-foreground";
 type Sort = "name-asc" | "name-desc" | "used-desc" | "used-asc";
 
 export default function Attributes() {
-  const { attributes, products, deleteAttribute } = useStore();
+  const { attributes, attributesLoading, deleteAttribute } = useStore();
   const navigate = useNavigate();
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<Sort>("name-asc");
 
-  const usedByCount = (attr: AttributeDef) =>
-    products.filter((p) => p.options?.some((o) => o.name === attr.name)).length;
+  const usedByCount = (attr: AttributeDef) => attr.productCount ?? 0;
 
   const q = search.trim().toLowerCase();
   const filtered = attributes.filter(
@@ -69,13 +69,23 @@ export default function Attributes() {
   const selectedIds = Object.keys(selected).filter((id) => selected[id]);
   const allSelected = rows.length > 0 && rows.every((a) => selected[a.id]);
 
-  const bulkDelete = () => {
+  const bulkDelete = async () => {
+    // The server is authoritative on "in use" (409), so attempt each and tally.
     const chosen = attributes.filter((a) => selected[a.id]);
-    const unused = chosen.filter((a) => usedByCount(a) === 0);
-    unused.forEach((a) => deleteAttribute(a.id));
-    const skipped = chosen.length - unused.length;
+    setDeleting(true);
+    let deleted = 0;
+    let skipped = 0;
+    for (const a of chosen) {
+      try {
+        await deleteAttribute(a.id);
+        deleted++;
+      } catch {
+        skipped++;
+      }
+    }
+    setDeleting(false);
     toast(
-      `${unused.length} attribute${unused.length === 1 ? "" : "s"} deleted` +
+      `${deleted} attribute${deleted === 1 ? "" : "s"} deleted` +
         (skipped > 0 ? ` — ${skipped} skipped (in use)` : ""),
     );
     setSelected({});
@@ -133,7 +143,11 @@ export default function Attributes() {
         )}
       </div>
 
-      {rows.length > 0 ? (
+      {attributesLoading ? (
+        <Card className="flex items-center justify-center px-6 py-12 text-muted-foreground shadow-sm">
+          <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+        </Card>
+      ) : rows.length > 0 ? (
         <Card className="gap-0 overflow-hidden py-0">
           <Table>
             <TableHeader>
@@ -248,11 +262,11 @@ export default function Attributes() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)}>
+            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)} disabled={deleting}>
               Cancel
             </Button>
-            <Button size="sm" variant="destructive" onClick={bulkDelete}>
-              Delete
+            <Button size="sm" variant="destructive" onClick={bulkDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

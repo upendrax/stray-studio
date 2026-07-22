@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, Bold, Italic, Link2, List, Plus, X, ImagePlus, Camera, ChevronRight, Search } from "lucide-react";
 import { useStore } from "@/state/store-context";
+import { ApiError } from "@/lib/api";
 import { cartesian, type AttributeDef, type Product } from "@/lib/mock-data";
 import { AttributeDialog } from "@/components/attribute-dialog";
 import {
@@ -1101,11 +1102,19 @@ export default function ProductEditor() {
         initial={null}
         existingNames={attributes.map((a) => a.name)}
         onClose={() => setAttrDialogOpen(false)}
-        onSave={(rec) => {
-          const full = { ...rec, id: `a${Math.random().toString(36).slice(2, 6)}` };
-          upsertAttribute(full);
-          addOptionFromAttr(full);
-          toast("Attribute created");
+        onSave={async (rec) => {
+          // Persist globally first — the option must reference the server-assigned
+          // id, not a client placeholder, so await the saved record.
+          try {
+            const saved = await upsertAttribute({
+              ...rec,
+              id: `a${Math.random().toString(36).slice(2, 6)}`,
+            });
+            addOptionFromAttr(saved);
+            toast("Attribute created");
+          } catch (e) {
+            toast(e instanceof ApiError ? e.message : "Couldn't create attribute");
+          }
         }}
       />
 

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, X } from "lucide-react";
 import { useStore } from "@/state/store-context";
+import { ApiError } from "@/lib/api";
 import type { AttributeDef, AttributeValue } from "@/lib/mock-data";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -24,7 +25,7 @@ const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 export default function AttributeEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { attributes, products, upsertAttribute, deleteAttribute } = useStore();
+  const { attributes, upsertAttribute, deleteAttribute } = useStore();
 
   const source = id ? attributes.find((a) => a.id === id) : null;
 
@@ -48,6 +49,7 @@ export default function AttributeEditor() {
   const [useImages, setUseImages] = useState(initial.useImages);
   const [useColor, setUseColor] = useState(initial.useColor);
   const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -70,9 +72,7 @@ export default function AttributeEditor() {
       : null;
   const invalid = !name.trim() || !!nameErr || values.length === 0;
 
-  const usedByCount = source
-    ? products.filter((p) => p.options?.some((o) => o.name === source.name)).length
-    : 0;
+  const usedByCount = source?.productCount ?? 0;
 
   const addValue = () => {
     const v = input.trim();
@@ -106,8 +106,8 @@ export default function AttributeEditor() {
     else navigate("/products/attributes");
   };
 
-  const save = () => {
-    if (invalid) return;
+  const save = async () => {
+    if (invalid || saving) return;
     const rec: AttributeDef = {
       id: id ?? `a${Math.random().toString(36).slice(2, 6)}`,
       name: name.trim(),
@@ -115,21 +115,28 @@ export default function AttributeEditor() {
       useImages,
       useColor,
     };
-    upsertAttribute(rec);
-    setDirty(false);
-    toast(id ? "Attribute saved" : "Attribute created");
-    navigate("/products/attributes");
+    setSaving(true);
+    try {
+      await upsertAttribute(rec);
+      setDirty(false);
+      toast(id ? "Attribute saved" : "Attribute created");
+      navigate("/products/attributes");
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't save attribute");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const remove = () => {
-    if (usedByCount > 0) {
-      toast(`Can't delete — used by ${usedByCount} product${usedByCount > 1 ? "s" : ""}`);
+  const remove = async () => {
+    try {
+      if (id) await deleteAttribute(id);
+      toast("Attribute deleted");
+      navigate("/products/attributes");
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't delete attribute");
       setConfirmDelete(false);
-      return;
     }
-    if (id) deleteAttribute(id);
-    toast("Attribute deleted");
-    navigate("/products/attributes");
   };
 
   return (
@@ -308,11 +315,11 @@ export default function AttributeEditor() {
           <div className="pointer-events-auto flex items-center gap-3 rounded-[10px] border bg-popover py-2 pl-4 pr-2 shadow-lg">
             <span className="text-[13px]">Unsaved changes</span>
             <div className="flex gap-1.5">
-              <Button variant="outline" size="sm" onClick={() => setConfirmDiscard(true)}>
+              <Button variant="outline" size="sm" onClick={() => setConfirmDiscard(true)} disabled={saving}>
                 Discard
               </Button>
-              <Button size="sm" onClick={save} disabled={invalid}>
-                Save
+              <Button size="sm" onClick={save} disabled={invalid || saving}>
+                {saving ? "Saving…" : "Save"}
               </Button>
             </div>
           </div>

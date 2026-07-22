@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { createDb, schema } from "../db";
 import { newId } from "../lib/id";
@@ -35,15 +35,35 @@ async function loadWithValues(db: ReturnType<typeof createDb>, id: string) {
     .where(eq(schema.attributeValues.attributeId, id))
     .orderBy(schema.attributeValues.position)
     .all();
-  return { ...attr, values };
+  // How many products currently use this attribute (drives the delete guard).
+  const usage = await db
+    .select({ n: sql<number>`count(distinct ${schema.productOptions.productId})` })
+    .from(schema.productOptions)
+    .where(eq(schema.productOptions.attributeId, id))
+    .get();
+  return { ...attr, productCount: usage?.n ?? 0, values };
 }
 
 // GET /api/admin/attributes — all attributes, each with its ordered values.
 attributes.get("/", async (c) => {
   const db = createDb(c.env.DB);
   const attrs = await db
-    .select()
+    .select({
+      id: schema.attributes.id,
+      name: schema.attributes.name,
+      useImages: schema.attributes.useImages,
+      useColor: schema.attributes.useColor,
+      position: schema.attributes.position,
+      createdAt: schema.attributes.createdAt,
+      updatedAt: schema.attributes.updatedAt,
+      productCount: sql<number>`count(distinct ${schema.productOptions.productId})`,
+    })
     .from(schema.attributes)
+    .leftJoin(
+      schema.productOptions,
+      eq(schema.productOptions.attributeId, schema.attributes.id),
+    )
+    .groupBy(schema.attributes.id)
     .orderBy(schema.attributes.position, schema.attributes.name)
     .all();
   const allValues = await db

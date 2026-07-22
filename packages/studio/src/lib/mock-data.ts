@@ -191,6 +191,7 @@ export const seedOrders: Order[] = [
 // ---------------------------------------------------------------------------
 
 export interface AttributeValue {
+  id?: string; // present once persisted; carried back on save for value reconciliation
   value: string;
   color?: string; // hex swatch, only when the attribute has useColor
 }
@@ -201,6 +202,7 @@ export interface AttributeDef {
   values: AttributeValue[];
   useImages: boolean; // values carry image sets (e.g. Color)
   useColor: boolean; // values carry a hex swatch (picker or typed hex)
+  productCount?: number; // how many products use it (from the API; drives delete guard)
 }
 
 export const seedAttributes: AttributeDef[] = [
