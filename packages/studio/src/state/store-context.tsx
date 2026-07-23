@@ -19,6 +19,7 @@ import {
   type Discount,
   type Order,
   type Product,
+  type ProductSummary,
   type StoreSettings,
 } from "@/lib/mock-data";
 import { api } from "@/lib/api";
@@ -110,6 +111,7 @@ function deriveCategories(rows: ApiCategory[]): {
     const path = pathOf(r);
     pathToId.set(path, r.id);
     list.push({
+      id: r.id,
       path,
       description: r.description ?? "",
       hasCover: !!r.coverImageKey,
@@ -134,6 +136,8 @@ function splitPath(path: string): { name: string; parentPath: string } {
 interface StoreState {
   orders: Order[];
   products: Product[];
+  productSummaries: ProductSummary[];
+  productsLoading: boolean;
   discounts: Discount[];
   categories: Category[];
   attributes: AttributeDef[];
@@ -145,6 +149,12 @@ interface StoreState {
   actorLabel: string;
   mutateOrder: (num: number, fn: (o: Order) => void, eventTitle?: string, opts?: { note?: boolean }) => void;
   updateProducts: (fn: (products: Product[]) => Product[]) => void;
+  // Real product-list actions (the summaries come from the API).
+  bulkProducts: (
+    action: "delete" | "status" | "addCategory",
+    ids: string[],
+    opts?: { status?: "Active" | "Draft"; categoryId?: string },
+  ) => Promise<void>;
   upsertDiscount: (rec: Discount) => void;
   deleteDiscounts: (ids: string[]) => void;
   // Persist (create if new, else update) and return the saved record — callers
@@ -166,6 +176,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const { status } = useAuth();
   const [orders, setOrders] = useState<Order[]>(seedOrders);
   const [products, setProducts] = useState<Product[]>(seedProducts);
+  const [productSummaries, setProductSummaries] = useState<ProductSummary[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
   const [discounts, setDiscounts] = useState<Discount[]>(seedDiscounts);
   const [categories, setCategories] = useState<Category[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
@@ -190,6 +202,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const { list, pathToId } = deriveCategories(res.categories);
     catPathToId.current = pathToId;
     setCategories(list);
+  }, []);
+
+  // Product list summaries (the editor loads full products by id separately).
+  const reloadProducts = useCallback(async () => {
+    const res = await api.get<{ products: ProductSummary[] }>("/api/admin/products");
+    setProductSummaries(res.products);
   }, []);
 
   // Load API-backed data once the session is confirmed. Gating on `authed`
@@ -237,10 +255,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (alive) setCategoriesLoading(false);
       });
 
+    // Products: list summaries.
+    reloadProducts()
+      .catch(() => {
+        /* leave product list empty on failure */
+      })
+      .finally(() => {
+        if (alive) setProductsLoading(false);
+      });
+
     return () => {
       alive = false;
     };
-  }, [status, reloadCategories]);
+  }, [status, reloadCategories, reloadProducts]);
 
   const actorLabel = "by Rashmi (owner)";
 
@@ -266,6 +293,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const updateProducts = useCallback<StoreState["updateProducts"]>((fn) => {
     setProducts((prev) => fn(prev));
   }, []);
+
+  const bulkProducts = useCallback<StoreState["bulkProducts"]>(
+    async (action, ids, opts) => {
+      await api.post("/api/admin/products/bulk", {
+        action,
+        ids,
+        // Studio uses Active/Draft; the API stores lowercase.
+        status: opts?.status ? opts.status.toLowerCase() : undefined,
+        categoryId: opts?.categoryId,
+      });
+      await reloadProducts();
+    },
+    [reloadProducts],
+  );
 
   const upsertDiscount = useCallback((rec: Discount) => {
     setDiscounts((prev) =>
@@ -409,6 +450,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () => ({
       orders,
       products,
+      productSummaries,
+      productsLoading,
       discounts,
       categories,
       categoriesLoading,
@@ -420,6 +463,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       actorLabel,
       mutateOrder,
       updateProducts,
+      bulkProducts,
       upsertDiscount,
       deleteDiscounts,
       upsertAttribute,
@@ -433,8 +477,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       anonymizeCustomer,
     }),
     [
-      orders, products, discounts, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
-      mutateOrder, updateProducts, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
+      orders, products, productSummaries, productsLoading, discounts, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
+      mutateOrder, updateProducts, bulkProducts, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
       upsertCategory, addProductsToCategory, deleteCategory, patchSettings, saveSettings,
       discardSettings, anonymizeCustomer,
     ],

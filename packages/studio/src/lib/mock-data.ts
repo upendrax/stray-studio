@@ -49,6 +49,32 @@ export interface Product {
   tags: string[];
 }
 
+// Product list row as the API returns it (GET /api/admin/products). Money is
+// integer cents; the Studio renders rupees, so divide at the boundary.
+export interface ProductSummary {
+  id: string;
+  title: string;
+  slug: string;
+  status: "active" | "draft";
+  hasOptions: boolean;
+  basePrice: number; // cents
+  compareAtPrice: number | null; // cents
+  trackInventory: boolean;
+  lowStockThreshold: number;
+  image: string | null; // r2Key (rendered once R2 upload lands)
+  totalStock: number;
+  variantCount: number;
+  categoryIds: string[];
+  updatedAt: number; // unix ms
+}
+
+export function summaryStock(p: ProductSummary): StockLevel {
+  if (!p.trackInventory) return "ok";
+  if (p.totalStock <= 0) return "out";
+  if (p.totalStock <= p.lowStockThreshold) return "low";
+  return "ok";
+}
+
 export interface OrderLine {
   name: string;
   variant: string;
@@ -318,6 +344,7 @@ export function discountTypeLabel(d: Discount): string {
 // ---------------------------------------------------------------------------
 
 export interface Category {
+  id?: string; // server id (present once loaded from the API)
   path: string; // "Tops > T-Shirts" — identity + hierarchy (derived from the id tree)
   description: string; // shown on the storefront category page
   hasCover: boolean; // whether a banner image is set (derived from coverImageKey)

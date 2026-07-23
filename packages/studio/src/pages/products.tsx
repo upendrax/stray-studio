@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useStore } from "@/state/store-context";
 import { moneyShort, rel } from "@/lib/format";
-import { stockLevel, type Product, type StockLevel } from "@/lib/mock-data";
+import { summaryStock, type ProductSummary, type StockLevel } from "@/lib/mock-data";
 import { StockDot } from "@/components/stock-dot";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -46,29 +46,26 @@ import { cn } from "@/lib/utils";
 
 const HEAD = "text-[11px] uppercase tracking-wider text-muted-foreground";
 
-function inventoryLabel(p: Product): string {
-  const lvl = stockLevel(p);
-  if (p.type === "simple") {
-    if (!p.trackInv) return "Not tracked";
-    if ((p.qty ?? 0) <= 0) return "Out of stock";
-    if ((p.qty ?? 0) <= (p.lowAt ?? 5)) return `${p.qty} in stock — low`;
-    return `${p.qty} in stock`;
+function inventoryLabel(p: ProductSummary): string {
+  if (!p.hasOptions) {
+    if (!p.trackInventory) return "Not tracked";
+    if (p.totalStock <= 0) return "Out of stock";
+    if (p.totalStock <= p.lowStockThreshold) return `${p.totalStock} in stock — low`;
+    return `${p.totalStock} in stock`;
   }
-  const total = (p.variants ?? []).reduce((s, v) => s + v.qty, 0);
+  const lvl = summaryStock(p);
   const suffix = lvl === "low" ? " — low" : lvl === "out" ? " — out" : "";
-  return `${p.variants?.length ?? 0} variants · ${total} in stock${suffix}`;
+  return `${p.variantCount} variant${p.variantCount === 1 ? "" : "s"} · ${p.totalStock} in stock${suffix}`;
 }
 
-function priceLabel(p: Product): string {
-  if (p.type === "simple") return moneyShort(p.price ?? 0);
-  const ps = (p.variants ?? []).map((v) => v.price);
-  const mn = Math.min(...ps);
-  const mx = Math.max(...ps);
-  return mn === mx ? moneyShort(mn) : `${moneyShort(mn)}–${mx.toLocaleString("en-US")}`;
+// Summaries carry only the base price (per-variant prices live on the full
+// product), so the list shows the base — the price for inheriting variants.
+function priceLabel(p: ProductSummary): string {
+  return moneyShort(p.basePrice / 100);
 }
 
 export default function Products() {
-  const { products, updateProducts, categories, addProductsToCategory } = useStore();
+  const { productSummaries, productsLoading, bulkProducts, categories } = useStore();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [search, setSearch] = useState("");
@@ -78,40 +75,56 @@ export default function Products() {
   );
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const q = search.toLowerCase();
-  const filtered = products.filter(
+  const filtered = productSummaries.filter(
     (p) =>
-      (!q ||
-        p.name.toLowerCase().includes(q) ||
-        (p.sku ?? "").toLowerCase().includes(q) ||
-        (p.variants ?? []).some((v) => v.sku.toLowerCase().includes(q))) &&
-      (status === "all" || p.status === status) &&
-      (stock === "all" || stockLevel(p) === stock),
+      (!q || p.title.toLowerCase().includes(q) || p.slug.includes(q)) &&
+      (status === "all" || p.status === status.toLowerCase()) &&
+      (stock === "all" || summaryStock(p) === stock),
   );
 
   const bulkIds = Object.keys(selected).filter((id) => selected[id]);
-  const firstRun = products.length === 0;
+  const firstRun = productSummaries.length === 0;
 
-  const setStatusBulk = (st: "Active" | "Draft") => {
-    updateProducts((prev) =>
-      prev.map((p) => (selected[p.id] ? { ...p, status: st } : p)),
+  const runBulk = async (
+    fn: () => Promise<void>,
+    done: string,
+    close?: () => void,
+  ) => {
+    setBusy(true);
+    try {
+      await fn();
+      toast(done);
+      setSelected({});
+      close?.();
+    } catch {
+      toast("Something went wrong — please try again");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setStatusBulk = (st: "Active" | "Draft") =>
+    runBulk(
+      () => bulkProducts("status", bulkIds, { status: st }),
+      `${bulkIds.length} product${bulkIds.length > 1 ? "s" : ""} set to ${st}`,
     );
-    toast(`${bulkIds.length} product${bulkIds.length > 1 ? "s" : ""} set to ${st}`);
-    setSelected({});
-  };
 
-  const deleteBulk = () => {
-    updateProducts((prev) => prev.filter((p) => !selected[p.id]));
-    toast("Products deleted");
-    setSelected({});
-    setConfirmDelete(false);
-  };
+  const deleteBulk = () =>
+    runBulk(() => bulkProducts("delete", bulkIds), "Products deleted", () =>
+      setConfirmDelete(false),
+    );
 
-  const addToCategory = (path: string) => {
-    addProductsToCategory(bulkIds, path);
-    toast(`Added ${bulkIds.length} product${bulkIds.length > 1 ? "s" : ""} to ${path.split(" > ").pop()}`);
-    setSelected({});
+  const addToCategory = (cat: { id?: string; path: string }) => {
+    if (!cat.id) return;
+    runBulk(
+      () => bulkProducts("addCategory", bulkIds, { categoryId: cat.id }),
+      `Added ${bulkIds.length} product${bulkIds.length > 1 ? "s" : ""} to ${cat.path
+        .split(" > ")
+        .pop()}`,
+    );
   };
 
   return (
@@ -174,23 +187,24 @@ export default function Products() {
                   </div>
                 ) : (
                   categories.map((c) => (
-                    <DropdownMenuItem key={c.path} onClick={() => addToCategory(c.path)}>
+                    <DropdownMenuItem key={c.path} onClick={() => addToCategory(c)}>
                       {c.path}
                     </DropdownMenuItem>
                   ))
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
-            <Button variant="outline" size="sm" onClick={() => setStatusBulk("Active")}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => setStatusBulk("Active")}>
               Set Active
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setStatusBulk("Draft")}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => setStatusBulk("Draft")}>
               Set Draft
             </Button>
             <Button
               variant="outline"
               size="sm"
               className="text-destructive"
+              disabled={busy}
               onClick={() => setConfirmDelete(true)}
             >
               Delete
@@ -199,7 +213,11 @@ export default function Products() {
         )}
       </div>
 
-      {filtered.length > 0 ? (
+      {productsLoading ? (
+        <Card className="flex items-center justify-center px-6 py-12 text-muted-foreground shadow-sm">
+          <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+        </Card>
+      ) : filtered.length > 0 ? (
         <Card className="gap-0 overflow-hidden py-0">
           <Table>
             <TableHeader>
@@ -224,7 +242,7 @@ export default function Products() {
             </TableHeader>
             <TableBody>
               {filtered.map((p) => {
-                const lvl = stockLevel(p);
+                const lvl = summaryStock(p);
                 return (
                   <TableRow key={p.id} data-state={selected[p.id] ? "selected" : undefined}>
                     <TableCell>
@@ -240,7 +258,7 @@ export default function Products() {
                         onClick={() => navigate(`/products/${p.id}`)}
                         className="flex size-10 items-center justify-center rounded-md border bg-muted text-[10px] font-semibold text-muted-foreground"
                       >
-                        {p.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                        {p.title.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
                       </button>
                     </TableCell>
                     <TableCell>
@@ -248,19 +266,19 @@ export default function Products() {
                         onClick={() => navigate(`/products/${p.id}`)}
                         className="truncate text-left font-medium hover:underline"
                       >
-                        {p.name}
+                        {p.title}
                       </button>
                     </TableCell>
                     <TableCell>
                       <Badge
                         className={cn(
                           "text-[11px]",
-                          p.status === "Active"
+                          p.status === "active"
                             ? "bg-status-delivered-bg text-status-delivered-fg"
                             : "bg-muted text-muted-foreground",
                         )}
                       >
-                        {p.status}
+                        {p.status === "active" ? "Active" : "Draft"}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -271,7 +289,7 @@ export default function Products() {
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{priceLabel(p)}</TableCell>
                     <TableCell className="text-right text-xs text-muted-foreground">
-                      {rel(p.updatedMin)}
+                      {rel(Math.max(0, Math.round((Date.now() - p.updatedAt) / 60000)))}
                     </TableCell>
                   </TableRow>
                 );
@@ -306,11 +324,11 @@ export default function Products() {
             <DialogDescription>This can't be undone.</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)}>
+            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button size="sm" variant="destructive" onClick={deleteBulk}>
-              Delete
+            <Button size="sm" variant="destructive" onClick={deleteBulk} disabled={busy}>
+              {busy ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

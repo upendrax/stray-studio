@@ -173,6 +173,7 @@ products.get("/", async (c) => {
       totalStock: stockByProduct.get(p.id)?.totalStock ?? 0,
       variantCount: stockByProduct.get(p.id)?.variantCount ?? 0,
       categoryIds: catsByProduct.get(p.id) ?? [],
+      updatedAt: p.updatedAt,
     })),
   });
 });
@@ -182,6 +183,48 @@ products.get("/:id", async (c) => {
   const product = await loadProduct(db, c.req.param("id"));
   if (!product) throw new HTTPException(404, { message: "Product not found" });
   return c.json({ product });
+});
+
+// Bulk list actions (delete / set status / add to a category). Status and
+// addCategory touch only the product row or the category junction, so they
+// skip the full-graph replace that a normal PATCH does.
+const bulkBody = z.object({
+  action: z.enum(["delete", "status", "addCategory"]),
+  ids: z.array(z.string().min(1)).min(1),
+  status: z.enum(["active", "draft"]).optional(),
+  categoryId: z.string().min(1).optional(),
+});
+
+products.post("/bulk", async (c) => {
+  const db = createDb(c.env.DB);
+  const body = parse(bulkBody, await c.req.json().catch(() => ({})));
+
+  if (body.action === "delete") {
+    for (const id of body.ids) {
+      await clearChildren(db, id);
+      await db.delete(schema.products).where(eq(schema.products.id, id));
+    }
+  } else if (body.action === "status") {
+    if (!body.status) throw new HTTPException(400, { message: "status required" });
+    await db
+      .update(schema.products)
+      .set({ status: body.status, updatedAt: Date.now() })
+      .where(inArray(schema.products.id, body.ids));
+  } else {
+    if (!body.categoryId) throw new HTTPException(400, { message: "categoryId required" });
+    const cat = await db
+      .select({ id: schema.categories.id })
+      .from(schema.categories)
+      .where(eq(schema.categories.id, body.categoryId))
+      .get();
+    if (!cat) throw new HTTPException(400, { message: "Unknown category referenced" });
+    await db
+      .insert(schema.productCategories)
+      .values(body.ids.map((productId) => ({ productId, categoryId: body.categoryId! })))
+      .onConflictDoNothing();
+  }
+
+  return c.json({ ok: true });
 });
 
 // --- Writes -------------------------------------------------------------
