@@ -300,6 +300,7 @@ export interface Category {
   path: string; // "Tops > T-Shirts" — identity + hierarchy (derived from the id tree)
   description: string; // shown on the storefront category page
   hasCover: boolean; // whether a banner image is set (derived from coverImageKey)
+  coverImageKey?: string; // R2 key of the cover banner, when set
   slug: string; // this category's own URL handle (flat, API-owned + deduped)
   metaTitle: string;
   metaDesc: string;

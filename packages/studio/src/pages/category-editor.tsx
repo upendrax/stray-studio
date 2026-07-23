@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, ImagePlus } from "lucide-react";
+import { ArrowLeft, ImagePlus, Loader2, X } from "lucide-react";
 import { useStore } from "@/state/store-context";
-import { ApiError } from "@/lib/api";
+import { ApiError, api, imageUrl } from "@/lib/api";
 import { makeCategory, slugify, type Category } from "@/lib/mock-data";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -32,7 +32,7 @@ interface Draft {
   name: string;
   parent: string; // "" = top level
   description: string;
-  hasCover: boolean;
+  coverKey: string; // R2 key of the cover image ("" = none)
   slug: string;
   slugTouched: boolean;
   metaTitle: string;
@@ -45,7 +45,7 @@ function draftFrom(cat: Category): Draft {
     name: seg[seg.length - 1] ?? "",
     parent: seg.slice(0, -1).join(" > "),
     description: cat.description,
-    hasCover: cat.hasCover,
+    coverKey: cat.coverImageKey ?? "",
     slug: cat.slug,
     slugTouched: true,
     metaTitle: cat.metaTitle,
@@ -57,7 +57,7 @@ const blank: Draft = {
   name: "",
   parent: "",
   description: "",
-  hasCover: false,
+  coverKey: "",
   slug: "",
   slugTouched: false,
   metaTitle: "",
@@ -82,8 +82,24 @@ export default function CategoryEditor() {
   const [d, setD] = useState<Draft>(initial);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const coverInput = useRef<HTMLInputElement>(null);
+
+  const pickCover = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const { r2Key } = await api.upload(file);
+      patch({ coverKey: r2Key });
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't upload image");
+    } finally {
+      setUploading(false);
+      if (coverInput.current) coverInput.current.value = "";
+    }
+  };
 
   if (originalPath && !source) {
     return (
@@ -122,7 +138,8 @@ export default function CategoryEditor() {
       await upsertCategory(
         makeCategory(newPath, {
           description: d.description.trim(),
-          hasCover: d.hasCover,
+          hasCover: !!d.coverKey,
+          coverImageKey: d.coverKey || undefined,
           slug: d.slugTouched && d.slug.trim() ? d.slug.trim() : slugify(d.name.trim()),
           metaTitle: d.metaTitle.trim(),
           metaDesc: d.metaDesc.trim(),
@@ -233,28 +250,45 @@ export default function CategoryEditor() {
             <div className="mb-3 text-xs text-muted-foreground">
               A banner shown at the top of this category's page in your store. Optional.
             </div>
-            <button
-              onClick={() => patch({ hasCover: !d.hasCover })}
-              className={
-                "flex h-40 w-full items-center justify-center overflow-hidden rounded-md border text-muted-foreground " +
-                (d.hasCover ? "" : "border-dashed hover:border-ring")
-              }
-              style={
-                d.hasCover
-                  ? {
-                      background:
-                        "repeating-linear-gradient(45deg, var(--muted), var(--muted) 8px, var(--background) 8px, var(--background) 16px)",
-                    }
-                  : undefined
-              }
-            >
-              {!d.hasCover && (
+            <input
+              ref={coverInput}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => pickCover(e.target.files?.[0])}
+            />
+            {d.coverKey ? (
+              <div className="group relative h-40 w-full overflow-hidden rounded-md border">
+                <img
+                  src={imageUrl(d.coverKey)}
+                  alt="Category cover"
+                  className="size-full object-cover"
+                />
+                <div className="absolute right-2 top-2 flex gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+                  <Button size="sm" variant="secondary" onClick={() => coverInput.current?.click()} disabled={uploading}>
+                    Replace
+                  </Button>
+                  <Button size="icon" variant="secondary" className="size-8" onClick={() => patch({ coverKey: "" })}>
+                    <X className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => coverInput.current?.click()}
+                disabled={uploading}
+                className="flex h-40 w-full items-center justify-center rounded-md border border-dashed text-muted-foreground hover:border-ring"
+              >
                 <span className="flex flex-col items-center gap-1">
-                  <ImagePlus className="size-5" />
-                  <span className="text-[11px]">Add image</span>
+                  {uploading ? (
+                    <Loader2 className="size-5 animate-spin" />
+                  ) : (
+                    <ImagePlus className="size-5" />
+                  )}
+                  <span className="text-[11px]">{uploading ? "Uploading…" : "Add image"}</span>
                 </span>
-              )}
-            </button>
+              </button>
+            )}
           </Card>
 
           {/* SEO */}

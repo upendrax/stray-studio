@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { ChevronRight, Image as ImageIcon, Plus, Search } from "lucide-react";
 import { useStore } from "@/state/store-context";
 import type { Category } from "@/lib/mock-data";
+import { imageUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -236,21 +237,17 @@ export function CategoriesTab() {
                     <TableCell>
                       <button
                         onClick={() => navigate(editHref(r.cat.path))}
-                        className={
-                          r.cat.hasCover
-                            ? "size-10 rounded-md border"
-                            : "flex size-10 items-center justify-center rounded-md border bg-muted text-muted-foreground"
-                        }
-                        style={
-                          r.cat.hasCover
-                            ? {
-                                background:
-                                  "repeating-linear-gradient(45deg, var(--muted), var(--muted) 5px, var(--background) 5px, var(--background) 10px)",
-                              }
-                            : undefined
-                        }
+                        className="flex size-10 items-center justify-center overflow-hidden rounded-md border bg-muted text-muted-foreground"
                       >
-                        {!r.cat.hasCover && <ImageIcon className="size-4" />}
+                        {r.cat.coverImageKey ? (
+                          <img
+                            src={imageUrl(r.cat.coverImageKey)}
+                            alt=""
+                            className="size-full object-cover"
+                          />
+                        ) : (
+                          <ImageIcon className="size-4" />
+                        )}
                       </button>
                     </TableCell>
                     <TableCell>

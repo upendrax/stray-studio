@@ -117,6 +117,7 @@ function deriveCategories(rows: ApiCategory[]): {
       path,
       description: r.description ?? "",
       hasCover: !!r.coverImageKey,
+      coverImageKey: r.coverImageKey ?? undefined,
       slug: r.slug,
       metaTitle: r.metaTitle ?? "",
       metaDesc: r.metaDescription ?? "",
@@ -732,6 +733,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         parentId,
         slug: cat.slug || undefined, // blank -> server slugifies the name
         description: cat.description || null,
+        coverImageKey: cat.coverImageKey ?? null,
         metaTitle: cat.metaTitle || null,
         metaDescription: cat.metaDesc || null,
       };

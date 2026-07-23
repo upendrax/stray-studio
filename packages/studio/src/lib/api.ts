@@ -42,10 +42,42 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
+// Upload a raw image body to R2 and get its key back. Sent as the file's own
+// content-type (not JSON), so it can't go through `request`.
+async function uploadImage(file: File | Blob): Promise<{ r2Key: string }> {
+  const res = await fetch(BASE + "/api/admin/uploads", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  const text = await res.text();
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
+  }
+  if (!res.ok) {
+    const msg =
+      (data && typeof data === "object" && "error" in data && (data as { error?: string }).error) ||
+      res.statusText ||
+      "Upload failed";
+    throw new ApiError(res.status, String(msg));
+  }
+  return data as { r2Key: string };
+}
+
+// Public URL for an R2 image key (same-origin; Vite proxies /api in dev).
+export const imageUrl = (key: string): string => `${BASE}/api/images/${key}`;
+
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
+  upload: uploadImage,
 };
