@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, Copy, MoreHorizontal } from "lucide-react";
 import { useStore } from "@/state/store-context";
-import { deriveCustomers } from "@/lib/mock-data";
+import { ApiError } from "@/lib/api";
+import type { CustomerDetail } from "@/lib/mock-data";
 import { money, rel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -35,25 +36,48 @@ import { cn } from "@/lib/utils";
 const HEAD = "text-[11px] uppercase tracking-wider text-muted-foreground";
 
 export default function CustomerDetail() {
-  const { name } = useParams();
+  const { email } = useParams();
   const navigate = useNavigate();
-  const { orders, anonymizeCustomer } = useStore();
+  const { getCustomer, anonymizeCustomer } = useStore();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [c, setC] = useState<CustomerDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
 
-  const customer = useMemo(
-    () => deriveCustomers(orders).find((c) => c.name === name),
-    [orders, name],
-  );
+  useEffect(() => {
+    if (!email) return;
+    let alive = true;
+    setLoading(true);
+    getCustomer(email)
+      .then((cust) => {
+        if (alive) setC(cust);
+      })
+      .catch(() => {
+        if (alive) setNotFound(true);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [email, getCustomer]);
 
-  if (!customer) {
+  if (notFound) {
     return (
       <Card className="px-6 py-12 text-center text-muted-foreground shadow-sm">
         Customer not found.
       </Card>
     );
   }
-  const c = customer;
-  const custOrders = orders.filter((o) => o.cust === c.name);
+  if (loading || !c) {
+    return (
+      <Card className="flex items-center justify-center px-6 py-16 text-muted-foreground shadow-sm">
+        <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+      </Card>
+    );
+  }
+  const custOrders = c.orders;
 
   const tiles = [
     { label: "Orders", value: String(c.count) },
@@ -61,10 +85,15 @@ export default function CustomerDetail() {
     { label: "Average order", value: money(c.countSpend ? c.spent / c.countSpend : 0) },
   ];
 
-  const doDelete = () => {
-    anonymizeCustomer(c.name);
-    toast("Customer deleted — orders anonymized");
-    navigate("/customers");
+  const doDelete = async () => {
+    try {
+      await anonymizeCustomer(c.email);
+      toast("Customer deleted — orders anonymized");
+      navigate("/customers");
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't delete customer");
+      setConfirmDelete(false);
+    }
   };
 
   const copy = (text: string, label: string) => {

@@ -14,8 +14,11 @@ import {
   type AttributeDef,
   type AttributeValue,
   type Category,
+  type Customer,
+  type CustomerDetail,
   type Discount,
   type Order,
+  type OrderStatus,
   type ProductSummary,
   type ApiProduct,
   type ProductWriteBody,
@@ -191,6 +194,47 @@ function mapDiscount(a: ApiDiscount, idToPath: Map<string, string>): Discount {
   };
 }
 
+// Minutes since a unix-ms timestamp — the Studio renders relative times off
+// this (rel()/relLong() take "minutes ago").
+const minutesAgo = (ms: number) => Math.max(0, Math.round((Date.now() - ms) / 60000));
+// API stores lowercase statuses; the Studio uses Capitalized.
+const capStatus = (s: string) =>
+  (s.charAt(0).toUpperCase() + s.slice(1)) as OrderStatus;
+
+// Customers are an API aggregate over orders (keyed by email).
+interface ApiCustomer {
+  email: string;
+  name: string;
+  phone: string;
+  address: string;
+  guest: boolean;
+  orderCount: number;
+  spent: number; // cents
+  joinedAt: number;
+}
+interface ApiCustomerOrder {
+  id: string;
+  number: number;
+  status: string;
+  total: number; // cents
+  paymentMethod: string;
+  createdAt: number;
+}
+
+function mapCustomer(a: ApiCustomer): Customer {
+  return {
+    name: a.name,
+    email: a.email,
+    phone: a.phone,
+    address: a.address,
+    guest: a.guest,
+    count: a.orderCount,
+    countSpend: a.orderCount,
+    spent: a.spent / 100,
+    joinedMin: minutesAgo(a.joinedAt),
+  };
+}
+
 function discountBody(d: Discount, pathToId: Map<string, string>) {
   return {
     code: d.code.trim(),
@@ -225,6 +269,8 @@ interface StoreState {
   productsLoading: boolean;
   discounts: Discount[];
   discountsLoading: boolean;
+  customers: Customer[];
+  customersLoading: boolean;
   categories: Category[];
   attributes: AttributeDef[];
   attributesLoading: boolean;
@@ -255,7 +301,9 @@ interface StoreState {
   patchSettings: (patch: Partial<StoreSettings>) => void;
   saveSettings: () => Promise<void>;
   discardSettings: () => void;
-  anonymizeCustomer: (name: string) => void;
+  // Customer detail (aggregate + that customer's orders) is fetched on demand.
+  getCustomer: (email: string) => Promise<CustomerDetail>;
+  anonymizeCustomer: (email: string) => Promise<void>;
 }
 
 const StoreContext = createContext<StoreState | null>(null);
@@ -269,6 +317,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [discountsLoading, setDiscountsLoading] = useState(true);
   const discountsRef = useRef<Discount[]>([]);
   discountsRef.current = discounts;
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customersLoading, setCustomersLoading] = useState(true);
   const [categories, setCategories] = useState<Category[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
   // path -> server id, rebuilt on every categories load; lets path-keyed
@@ -308,6 +358,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       Array.from(catPathToId.current, ([path, id]) => [id, path]),
     );
     setDiscounts(res.discounts.map((d) => mapDiscount(d, idToPath)));
+  }, []);
+
+  const reloadCustomers = useCallback(async () => {
+    const res = await api.get<{ customers: ApiCustomer[] }>("/api/admin/customers");
+    setCustomers(res.customers.map(mapCustomer));
   }, []);
 
   // Load API-backed data once the session is confirmed. Gating on `authed`
@@ -372,10 +427,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (alive) setProductsLoading(false);
       });
 
+    // Customers: aggregate over orders.
+    reloadCustomers()
+      .catch(() => {
+        /* leave customers empty on failure */
+      })
+      .finally(() => {
+        if (alive) setCustomersLoading(false);
+      });
+
     return () => {
       alive = false;
     };
-  }, [status, reloadCategories, reloadProducts, reloadDiscounts]);
+  }, [status, reloadCategories, reloadProducts, reloadDiscounts, reloadCustomers]);
 
   const actorLabel = "by Rashmi (owner)";
 
@@ -536,15 +600,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setSettings(JSON.parse(settingsSnap) as StoreSettings);
   }, [settingsSnap]);
 
-  const anonymizeCustomer = useCallback((name: string) => {
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.cust === name
-          ? { ...o, cust: "Deleted customer", email: "—", phone: "—", guest: true }
-          : o,
-      ),
+  const getCustomer = useCallback<StoreState["getCustomer"]>(async (email) => {
+    const res = await api.get<{ customer: ApiCustomer & { orders: ApiCustomerOrder[] } }>(
+      `/api/admin/customers/${encodeURIComponent(email)}`,
     );
+    const c = res.customer;
+    const orders = c.orders.map((o) => ({
+      num: o.number,
+      min: minutesAgo(o.createdAt),
+      total: o.total / 100,
+      status: capStatus(o.status),
+    }));
+    // Average uses only orders that counted toward spend (not cancelled/refunded).
+    const countSpend = c.orders.filter(
+      (o) => o.status !== "cancelled" && o.status !== "refunded",
+    ).length;
+    return { ...mapCustomer(c), countSpend, orders };
   }, []);
+
+  const anonymizeCustomer = useCallback<StoreState["anonymizeCustomer"]>(
+    async (email) => {
+      await api.del(`/api/admin/customers/${encodeURIComponent(email)}`);
+      await reloadCustomers();
+    },
+    [reloadCustomers],
+  );
 
   const value = useMemo<StoreState>(
     () => ({
@@ -553,6 +633,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       productsLoading,
       discounts,
       discountsLoading,
+      customers,
+      customersLoading,
       categories,
       categoriesLoading,
       attributes,
@@ -575,13 +657,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       patchSettings,
       saveSettings,
       discardSettings,
+      getCustomer,
       anonymizeCustomer,
     }),
     [
-      orders, productSummaries, productsLoading, discounts, discountsLoading, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
+      orders, productSummaries, productsLoading, discounts, discountsLoading, customers, customersLoading, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
       mutateOrder, bulkProducts, getProduct, saveProduct, deleteProduct, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
       upsertCategory, deleteCategory, patchSettings, saveSettings,
-      discardSettings, anonymizeCustomer,
+      discardSettings, getCustomer, anonymizeCustomer,
     ],
   );
 

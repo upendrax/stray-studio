@@ -1,9 +1,8 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Search } from "lucide-react";
 import { useStore } from "@/state/store-context";
-import { deriveCustomers } from "@/lib/mock-data";
 import { money, rel } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,13 +31,13 @@ import { PageHeader } from "@/components/page-header";
 const HEAD = "text-[11px] uppercase tracking-wider text-muted-foreground";
 
 export default function Customers() {
-  const { orders, anonymizeCustomer } = useStore();
+  const { customers, customersLoading, anonymizeCustomer } = useStore();
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  const customers = useMemo(() => deriveCustomers(orders), [orders]);
   const q = search.toLowerCase();
   const filtered = customers.filter(
     (c) =>
@@ -48,17 +47,25 @@ export default function Customers() {
       c.phone.replace(/\s/g, "").includes(q.replace(/\s/g, "")),
   );
 
-  const selectedNames = Object.keys(selected).filter((n) => selected[n]);
+  // Customers are keyed by email (guests have no account id).
+  const selectedEmails = Object.keys(selected).filter((e) => selected[e]);
   const allSelected =
-    filtered.length > 0 && filtered.every((c) => selected[c.name]);
+    filtered.length > 0 && filtered.every((c) => selected[c.email]);
 
-  const bulkDelete = () => {
-    for (const name of selectedNames) anonymizeCustomer(name);
-    toast(
-      `${selectedNames.length} customer${selectedNames.length === 1 ? "" : "s"} deleted — orders anonymized`,
-    );
-    setSelected({});
-    setConfirmDelete(false);
+  const bulkDelete = async () => {
+    setBusy(true);
+    try {
+      for (const email of selectedEmails) await anonymizeCustomer(email);
+      toast(
+        `${selectedEmails.length} customer${selectedEmails.length === 1 ? "" : "s"} deleted — orders anonymized`,
+      );
+      setSelected({});
+      setConfirmDelete(false);
+    } catch {
+      toast("Couldn't delete — please try again");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -77,10 +84,10 @@ export default function Customers() {
             className="h-9 pl-[30px]"
           />
         </div>
-        {selectedNames.length > 0 && (
+        {selectedEmails.length > 0 && (
           <div className="ml-auto flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
-              {selectedNames.length} selected
+              {selectedEmails.length} selected
             </span>
             <Button
               variant="outline"
@@ -94,7 +101,11 @@ export default function Customers() {
         )}
       </div>
 
-      {filtered.length > 0 ? (
+      {customersLoading ? (
+        <Card className="flex items-center justify-center px-6 py-12 text-muted-foreground shadow-sm">
+          <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+        </Card>
+      ) : filtered.length > 0 ? (
         <Card className="gap-0 overflow-hidden py-0">
           <Table className="min-w-[760px]">
             <TableHeader>
@@ -104,7 +115,7 @@ export default function Customers() {
                     checked={allSelected}
                     onCheckedChange={(c) => {
                       const next: Record<string, boolean> = {};
-                      if (c === true) for (const cu of filtered) next[cu.name] = true;
+                      if (c === true) for (const cu of filtered) next[cu.email] = true;
                       setSelected(next);
                     }}
                   />
@@ -120,15 +131,15 @@ export default function Customers() {
             <TableBody>
               {filtered.map((c) => (
                 <TableRow
-                  key={c.name}
-                  onClick={() => navigate(`/customers/${encodeURIComponent(c.name)}`)}
-                  data-state={selected[c.name] ? "selected" : undefined}
+                  key={c.email}
+                  onClick={() => navigate(`/customers/${encodeURIComponent(c.email)}`)}
+                  data-state={selected[c.email] ? "selected" : undefined}
                   className="cursor-pointer"
                 >
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <Checkbox
-                      checked={!!selected[c.name]}
-                      onCheckedChange={(ch) => setSelected((s) => ({ ...s, [c.name]: ch === true }))}
+                      checked={!!selected[c.email]}
+                      onCheckedChange={(ch) => setSelected((s) => ({ ...s, [c.email]: ch === true }))}
                     />
                   </TableCell>
                   <TableCell className="truncate font-medium">
@@ -168,7 +179,7 @@ export default function Customers() {
         <DialogContent className="w-[400px]">
           <DialogHeader>
             <DialogTitle>
-              Delete {selectedNames.length} customer{selectedNames.length > 1 ? "s" : ""}?
+              Delete {selectedEmails.length} customer{selectedEmails.length > 1 ? "s" : ""}?
             </DialogTitle>
             <DialogDescription>
               Their accounts are removed. Orders are kept and anonymized. This
@@ -176,11 +187,11 @@ export default function Customers() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)}>
+            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button size="sm" variant="destructive" onClick={bulkDelete}>
-              Delete
+            <Button size="sm" variant="destructive" onClick={bulkDelete} disabled={busy}>
+              {busy ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

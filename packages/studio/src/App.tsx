@@ -68,7 +68,7 @@ export default function App() {
                     <Route path="discounts/new" element={<DiscountEditor />} />
                     <Route path="discounts/edit/:id" element={<DiscountEditor />} />
                     <Route path="customers" element={<Customers />} />
-                    <Route path="customers/:name" element={<CustomerDetail />} />
+                    <Route path="customers/:email" element={<CustomerDetail />} />
                     <Route path="settings" element={<Settings />} />
                     <Route path="profile" element={<Profile />} />
                   </Route>

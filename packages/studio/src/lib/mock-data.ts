@@ -450,30 +450,15 @@ export interface Customer {
   joinedMin: number;
 }
 
-// Registered customers joined before their first order; guests "join" at it.
-const JOIN_MAP: Record<string, number> = {
-  "Nethmi Perera": 191000, "Dilini Fernando": 246000, "Amaya Jayasuriya": 133000,
-  "Ruwan Wickramasinghe": 92000, "Shenali Gunawardena": 262000, "Tharindu Bandara": 312000,
-  "Ishara Madushani": 154000, "Nadeesha Herath": 411000, "Chamodi Alwis": 61000,
-};
-
-export function deriveCustomers(orders: Order[]): Customer[] {
-  const map: Record<string, Customer> = {};
-  for (const o of orders) {
-    const c = (map[o.cust] ??= {
-      name: o.cust, email: o.email, phone: o.phone, guest: o.guest,
-      count: 0, countSpend: 0, spent: 0, address: o.address, joinedMin: o.min,
-    });
-    c.count++;
-    if (o.status !== "Cancelled" && o.status !== "Refunded") {
-      c.spent += o.total;
-      c.countSpend++;
-    }
-    c.joinedMin = Math.max(c.joinedMin, o.min);
-  }
-  return Object.values(map)
-    .map((c) => ({ ...c, joinedMin: c.guest ? c.joinedMin : (JOIN_MAP[c.name] ?? c.joinedMin) }))
-    .sort((a, b) => b.spent - a.spent);
+// A customer's own order rows + the fields the detail page shows.
+export interface CustomerOrderRow {
+  num: number;
+  min: number;
+  total: number;
+  status: OrderStatus;
+}
+export interface CustomerDetail extends Customer {
+  orders: CustomerOrderRow[];
 }
 
 // Product-level low-stock for the dashboard. Summaries don't carry per-variant
