@@ -1,0 +1,55 @@
+---
+import Swatches from "./Swatches.astro";
+import { priceLabel, money, discountPct } from "../lib/format";
+import { createApi } from "../lib/api";
+import type { ProductCard } from "../lib/types";
+
+interface Props {
+  product: ProductCard;
+  apiBase: string;
+}
+const { product, apiBase } = Astro.props;
+const img = createApi(apiBase).imageUrl(product.image);
+const pct = discountPct(product.priceMin, product.compareAtPrice);
+const onSale = pct != null;
+---
+
+<a href={`/products/${product.slug}`} class="group block">
+  <div class="relative overflow-hidden rounded-[var(--radius-brand)] bg-panel">
+    <div class="aspect-[4/5]">
+      {img ? (
+        <img
+          src={img}
+          alt={product.title}
+          loading="lazy"
+          class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+        />
+      ) : (
+        <div class="flex h-full w-full items-center justify-center">
+          <span class="u-label">No image</span>
+        </div>
+      )}
+    </div>
+
+    {onSale && (
+      <span class="absolute left-3 top-3 rounded-[var(--radius-brand)] bg-sale px-2 py-1 font-mono text-[0.625rem] font-medium tracking-widest text-paper">
+        −{pct}%
+      </span>
+    )}
+    {!product.inStock && (
+      <span class="absolute inset-x-0 bottom-0 bg-ink/85 py-1.5 text-center font-mono text-[0.625rem] tracking-widest text-paper">
+        SOLD OUT
+      </span>
+    )}
+  </div>
+
+  <div class="mt-3 flex items-start justify-between gap-3">
+    <h3 class="text-sm font-medium leading-snug">{product.title}</h3>
+    <Swatches swatches={product.swatches} max={4} />
+  </div>
+
+  <div class="mt-1 flex items-baseline gap-2">
+    <span class="font-mono text-sm text-ink">{priceLabel(product.priceMin, product.priceMax)}</span>
+    {onSale && <span class="font-mono text-xs text-muted line-through">{money(product.compareAtPrice!)}</span>}
+  </div>
+</a>

@@ -1,0 +1,17 @@
+// Per-client deploys copy this file and change: name, STORE_API_URL.
+// The Astro Cloudflare adapter builds ./dist/_worker.js as the entry.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "stray-storefront",
+  "main": "./dist/_worker.js/index.js",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "vars": {
+    // The client's core API Worker (catalog, cart validation, checkout).
+    "STORE_API_URL": "http://localhost:8787"
+  }
+}

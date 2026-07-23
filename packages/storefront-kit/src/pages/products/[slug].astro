@@ -1,0 +1,273 @@
+---
+import Layout from "../../components/Layout.astro";
+import { apiFor, NotFoundError } from "../../lib/api";
+import { money, priceLabel, discountPct } from "../../lib/format";
+import type { ProductDetail } from "../../lib/types";
+
+const { slug } = Astro.params;
+const api = apiFor(Astro);
+
+let product: ProductDetail;
+try {
+  product = await api.product(slug!);
+} catch (err) {
+  if (err instanceof NotFoundError) return Astro.rewrite("/404");
+  throw err;
+}
+
+// Gallery = product gallery, else every colour's images (deduped).
+const galleryKeys = product.images.length
+  ? product.images.map((i) => i.r2Key)
+  : [...new Set(product.options.flatMap((o) => o.values.flatMap((v) => v.images)))];
+const gallery = galleryKeys.map((k) => ({ key: k, url: api.imageUrl(k)! }));
+
+const pct = discountPct(product.priceMin, product.compareAtPrice);
+const cat = product.categories[0];
+
+// Serialised for the client-side variant selector.
+const pdpData = JSON.stringify({ base: api.base, product });
+---
+
+<Layout title={product.title} description={product.description ?? undefined}>
+  <div class="u-container py-8 md:py-12">
+    <!-- Breadcrumb -->
+    <nav class="u-label mb-6 flex items-center gap-2">
+      <a href="/products" class="hover:text-ink">Shop</a>
+      {cat && (<><span aria-hidden="true">/</span><a href={`/collections/${cat.slug}`} class="hover:text-ink">{cat.name}</a></>)}
+    </nav>
+
+    <div class="grid gap-10 md:grid-cols-2 lg:gap-16">
+      <!-- Gallery -->
+      <div class="flex flex-col-reverse gap-4 sm:flex-row">
+        {gallery.length > 1 && (
+          <div class="flex gap-3 sm:flex-col" id="pdp-thumbs">
+            {gallery.map((g, i) => (
+              <button
+                class="thumb aspect-[4/5] w-16 shrink-0 overflow-hidden rounded-[var(--radius-brand)] bg-panel"
+                data-img={g.url}
+                aria-pressed={i === 0 ? "true" : "false"}
+              >
+                <img src={g.url} alt="" class="h-full w-full object-cover" loading="lazy" />
+              </button>
+            ))}
+          </div>
+        )}
+        <div class="flex-1 overflow-hidden rounded-[var(--radius-brand)] bg-panel">
+          <div class="aspect-[4/5]">
+            {gallery.length > 0 ? (
+              <img id="pdp-main-img" src={gallery[0]!.url} alt={product.title} class="h-full w-full object-cover" />
+            ) : (
+              <div class="flex h-full w-full items-center justify-center"><span class="u-label">No image</span></div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <!-- Details -->
+      <div class="md:pt-4">
+        {cat && <span class="u-label">{cat.name}</span>}
+        <h1 class="mt-2 text-3xl md:text-4xl">{product.title}</h1>
+
+        <div class="mt-4 flex items-baseline gap-3">
+          <span id="pdp-price" class="font-mono text-xl">{priceLabel(product.priceMin, product.priceMax)}</span>
+          {pct != null && (
+            <>
+              <span id="pdp-compare" class="font-mono text-sm text-muted line-through">{money(product.compareAtPrice!)}</span>
+              <span class="rounded-[var(--radius-brand)] bg-sale px-2 py-0.5 font-mono text-[0.625rem] tracking-widest text-paper">−{pct}%</span>
+            </>
+          )}
+        </div>
+
+        <!-- Options -->
+        <div class="mt-8 space-y-6" id="pdp-options">
+          {product.options.map((opt, oi) => {
+            const asSwatch = opt.useColor || opt.useImages;
+            return (
+              <div data-option-block={oi}>
+                <div class="mb-2 flex items-center gap-2">
+                  <span class="u-label !text-ink">{opt.name}</span>
+                  <span class="u-label" data-selected-label={oi}></span>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  {opt.values.map((v) => asSwatch ? (
+                    <button
+                      class="opt opt-swatch"
+                      data-opt={oi}
+                      data-val={v.id}
+                      data-img-key={v.images[0] ?? ""}
+                      data-label={v.value}
+                      title={v.value}
+                      aria-pressed="false"
+                    >
+                      <span class="opt-dot" style={`background:${v.color ?? "var(--color-panel)"}`}></span>
+                    </button>
+                  ) : (
+                    <button
+                      class="opt opt-pill"
+                      data-opt={oi}
+                      data-val={v.id}
+                      data-label={v.value}
+                      aria-pressed="false"
+                    >{v.value}</button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <!-- Stock + add -->
+        <div class="mt-8">
+          <p id="pdp-stock" class="u-label mb-3"></p>
+          <button
+            id="pdp-add"
+            class="w-full rounded-[var(--radius-brand)] bg-accent px-6 py-3.5 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:min-w-64"
+          >Add to bag</button>
+          <p id="pdp-added" class="u-label mt-3 text-accent" hidden>Added to your bag ✓</p>
+        </div>
+
+        {product.description && (
+          <div class="mt-10 border-t border-line pt-6">
+            <div class="u-label mb-3">Details</div>
+            <div class="prose-sm max-w-none whitespace-pre-line text-sm leading-relaxed text-muted" set:html={product.description}></div>
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+
+  <script type="application/json" id="pdp-data" set:html={pdpData}></script>
+
+  <script>
+    import { money } from "../../lib/format";
+    import { addToBag } from "../../lib/bag";
+    import type { ProductDetail, ProductVariant } from "../../lib/types";
+
+    const el = document.getElementById("pdp-data");
+    if (el?.textContent) {
+      const { base, product } = JSON.parse(el.textContent) as { base: string; product: ProductDetail };
+
+      const selected: Record<number, string> = {};
+      const optButtons = Array.from(document.querySelectorAll<HTMLButtonElement>(".opt"));
+
+      const sameSet = (a: string[], b: string[]) =>
+        a.length === b.length && [...a].sort().join() === [...b].sort().join();
+
+      const findVariant = (ids: string[]): ProductVariant | undefined =>
+        product.variants.find((v) => sameSet(v.optionValueIds, ids));
+
+      const selectedIds = () => product.options.map((_, i) => selected[i]).filter(Boolean) as string[];
+
+      // Would picking `valueId` for option `oi` yield any in-stock variant,
+      // given the other current selections? Drives the disabled/greyed state.
+      function valueReachable(oi: number, valueId: string): boolean {
+        const ids = product.options.map((_, i) => (i === oi ? valueId : selected[i])).filter(Boolean) as string[];
+        return product.variants.some(
+          (v) => v.inStock && ids.every((id) => v.optionValueIds.includes(id)),
+        );
+      }
+
+      function render() {
+        const ids = selectedIds();
+        const complete = ids.length === product.options.length;
+        const variant = complete ? findVariant(ids) : undefined;
+
+        // Price
+        const priceEl = document.getElementById("pdp-price")!;
+        if (variant) priceEl.textContent = money(variant.price);
+
+        // Selected-value labels + active states + reachability
+        for (const btn of optButtons) {
+          const oi = Number(btn.dataset.opt);
+          const isSel = selected[oi] === btn.dataset.val;
+          btn.setAttribute("aria-pressed", isSel ? "true" : "false");
+          const reachable = valueReachable(oi, btn.dataset.val!);
+          btn.classList.toggle("opt-out", !reachable);
+        }
+        product.options.forEach((_, oi) => {
+          const label = document.querySelector<HTMLElement>(`[data-selected-label="${oi}"]`);
+          const btn = optButtons.find((b) => Number(b.dataset.opt) === oi && b.dataset.val === selected[oi]);
+          if (label) label.textContent = btn?.dataset.label ?? "";
+        });
+
+        // Main image follows the chosen colour.
+        const colourBtn = optButtons.find(
+          (b) => b.dataset.val === selected[Number(b.dataset.opt)] && b.dataset.imgKey,
+        );
+        if (colourBtn?.dataset.imgKey) {
+          const url = `${base}/api/images/${colourBtn.dataset.imgKey}`;
+          const main = document.getElementById("pdp-main-img") as HTMLImageElement | null;
+          if (main) main.src = url;
+        }
+
+        // Stock + add button
+        const stock = document.getElementById("pdp-stock")!;
+        const add = document.getElementById("pdp-add") as HTMLButtonElement;
+        const added = document.getElementById("pdp-added")!;
+        added.hidden = true;
+        if (!complete) {
+          stock.textContent = "Select options";
+          add.disabled = true;
+        } else if (!variant || !variant.inStock) {
+          stock.textContent = "Sold out";
+          add.disabled = true;
+        } else {
+          stock.textContent = product.trackInventory && variant.quantity <= 5 ? `Only ${variant.quantity} left` : "In stock";
+          add.disabled = false;
+        }
+      }
+
+      // Wire option buttons.
+      for (const btn of optButtons) {
+        btn.addEventListener("click", () => {
+          selected[Number(btn.dataset.opt)] = btn.dataset.val!;
+          render();
+        });
+      }
+
+      // Wire gallery thumbnails.
+      document.querySelectorAll<HTMLButtonElement>("#pdp-thumbs .thumb").forEach((t) => {
+        t.addEventListener("click", () => {
+          const main = document.getElementById("pdp-main-img") as HTMLImageElement | null;
+          if (main && t.dataset.img) main.src = t.dataset.img;
+          document.querySelectorAll("#pdp-thumbs .thumb").forEach((x) => x.setAttribute("aria-pressed", "false"));
+          t.setAttribute("aria-pressed", "true");
+        });
+      });
+
+      // Add to bag.
+      document.getElementById("pdp-add")!.addEventListener("click", () => {
+        const ids = selectedIds();
+        const variant = findVariant(ids);
+        if (!variant || !variant.inStock) return;
+        const label = product.options
+          .map((_, i) => optButtons.find((b) => Number(b.dataset.opt) === i && b.dataset.val === selected[i])?.dataset.label)
+          .filter(Boolean)
+          .join(" / ");
+        const imgKey = optButtons.find((b) => b.dataset.val === selected[Number(b.dataset.opt)] && b.dataset.imgKey)?.dataset.imgKey
+          || product.images[0]?.r2Key
+          || null;
+        addToBag({
+          productId: product.id,
+          variantId: variant.id,
+          slug: product.slug,
+          title: product.title,
+          variantLabel: label || null,
+          price: variant.price,
+          image: imgKey,
+        });
+        document.getElementById("pdp-added")!.hidden = false;
+      });
+
+      // Default: first in-stock variant (falls back to first values).
+      const firstInStock = product.variants.find((v) => v.inStock) ?? product.variants[0];
+      if (firstInStock) {
+        product.options.forEach((opt, oi) => {
+          const match = opt.values.find((v) => firstInStock.optionValueIds.includes(v.id));
+          if (match) selected[oi] = match.id;
+        });
+      }
+      render();
+    }
+  </script>
+</Layout>

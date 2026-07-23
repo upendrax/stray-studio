@@ -1,0 +1,24 @@
+---
+import type { Swatch } from "../lib/types";
+
+interface Props {
+  swatches: Swatch[];
+  max?: number;
+}
+const { swatches, max = 5 } = Astro.props;
+const shown = swatches.slice(0, max);
+const extra = swatches.length - shown.length;
+---
+
+{swatches.length > 0 && (
+  <div class="flex items-center gap-1.5">
+    {shown.map((s) => (
+      <span
+        class="h-3.5 w-3.5 rounded-full border border-line ring-1 ring-inset ring-black/5"
+        style={`background:${s.color ?? "var(--color-panel)"}`}
+        title={s.value}
+      ></span>
+    ))}
+    {extra > 0 && <span class="u-label !text-[0.625rem]">+{extra}</span>}
+  </div>
+)}

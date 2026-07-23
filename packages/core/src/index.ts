@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { createAuth, trustedOrigins } from "./auth";
 import { adminRoutes } from "./routes/admin";
+import { storeRoutes } from "./routes/store";
 import { devRoutes } from "./routes/dev";
 import type { AppEnv } from "./lib/context";
 
@@ -41,12 +42,15 @@ app.on(["GET", "POST"], "/api/auth/*", (c) =>
 // Owner-only Studio API (guards session internally).
 app.route("/api/admin", adminRoutes);
 
+// Public storefront catalog API (products, categories, settings). Read-only,
+// unauthenticated — only active products are exposed.
+app.route("/api/store", storeRoutes);
+
 // Local-only bootstrap/dev helpers (404 in production).
 app.route("/api/dev", devRoutes);
 
-// Storefront API (catalog, cart validation, checkout) + PayHere webhook
-// land here in later phases:
-//   /api/store/*  ·  /api/webhooks/payhere
+// Cart validation + checkout (POST /api/store/checkout) and the PayHere
+// webhook (/api/webhooks/payhere) land in the checkout phase.
 
 // Consistent JSON error envelope for the whole API.
 app.onError((err, c) => {

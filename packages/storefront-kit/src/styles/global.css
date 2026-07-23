@@ -1,0 +1,145 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Theme tokens. A client project rebrands the kit by overriding these CSS
+   variables in a later-loaded stylesheet — no component edits needed.
+
+   Default identity: warm paper + ink, with a deep indigo accent drawn from
+   Sri Lanka's textile-dye tradition (batik / indigo), not the usual terracotta.
+--------------------------------------------------------------------------- */
+@theme {
+  --color-paper: #fbfaf7; /* warm near-white page */
+  --color-panel: #f3f0e9; /* raised surface (cards, wells) */
+  --color-ink: #1a1815; /* warm near-black text */
+  --color-muted: #6e6a60; /* secondary text */
+  --color-line: #e6e1d7; /* hairline borders */
+  --color-accent: #2c3a66; /* deep indigo — links, CTAs, active state */
+  --color-accent-ink: #fbfaf7; /* text on accent */
+  --color-sale: #9a3b28; /* muted brick — used only for the sale price */
+
+  --font-display: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Spline Sans Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --radius-brand: 3px;
+}
+
+html {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+/* Care-label micro-type — the signature motif. Woven-tag style: mono, small,
+   wide-tracked uppercase. Used for eyebrows, price tickets, swatch counts. */
+.u-label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.u-container {
+  width: 100%;
+  max-width: 78rem;
+  margin-inline: auto;
+  padding-inline: 1.25rem;
+}
+@media (min-width: 768px) {
+  .u-container { padding-inline: 2rem; }
+}
+
+/* Animated underline for text links. */
+.u-underline {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 0% 1px;
+  background-position: 0 100%;
+  background-repeat: no-repeat;
+  transition: background-size 0.3s ease;
+}
+.u-underline:hover,
+a:hover > .u-underline {
+  background-size: 100% 1px;
+}
+
+/* PDP option controls ---------------------------------------------------- */
+.opt {
+  cursor: pointer;
+  border-radius: var(--radius-brand);
+  transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+.opt-pill {
+  min-width: 2.75rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.875rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-paper);
+}
+.opt-pill:hover { border-color: var(--color-ink); }
+.opt-pill[aria-pressed="true"] {
+  border-color: var(--color-ink);
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+.opt-swatch {
+  display: grid;
+  place-items: center;
+  height: 2.25rem;
+  width: 2.25rem;
+  border: 1px solid var(--color-line);
+  padding: 0;
+}
+.opt-swatch:hover { border-color: var(--color-ink); }
+.opt-swatch[aria-pressed="true"] {
+  border-color: var(--color-ink);
+  box-shadow: inset 0 0 0 2px var(--color-paper);
+}
+.opt-dot {
+  height: 1.35rem;
+  width: 1.35rem;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+/* Combination not in stock given the current selection. */
+.opt-out {
+  opacity: 0.35;
+  position: relative;
+}
+.opt-out.opt-pill { text-decoration: line-through; }
+
+/* Gallery thumbnails */
+.thumb {
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.thumb[aria-pressed="true"] { border-color: var(--color-ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}

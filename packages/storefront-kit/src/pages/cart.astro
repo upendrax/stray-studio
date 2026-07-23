@@ -1,0 +1,92 @@
+---
+import Layout from "../components/Layout.astro";
+import { apiFor } from "../lib/api";
+
+// Preview bag only. Server-validated cart + checkout arrive in the next
+// milestone; this reads the localStorage lines the catalog writes.
+const api = apiFor(Astro);
+---
+
+<Layout title="Your bag">
+  <div class="u-container py-12">
+    <h1 class="mb-8 text-4xl">Your bag</h1>
+
+    <div id="bag-root" data-api-base={api.base}>
+      <p class="u-label">Loading…</p>
+    </div>
+
+    <div id="bag-empty" hidden class="py-16 text-center">
+      <p class="u-label">Your bag is empty</p>
+      <a href="/products" class="mt-4 inline-block text-sm font-medium"><span class="u-underline">Continue shopping</span></a>
+    </div>
+  </div>
+
+  <script>
+    import { readBag, writeBag, type BagLine } from "../lib/bag";
+    import { money } from "../lib/format";
+
+    const root = document.getElementById("bag-root")!;
+    const empty = document.getElementById("bag-empty")!;
+    const base = root.dataset.apiBase!;
+
+    function render() {
+      const lines = readBag();
+      if (lines.length === 0) {
+        root.hidden = true;
+        empty.hidden = false;
+        return;
+      }
+      root.hidden = false;
+      empty.hidden = true;
+
+      const subtotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
+      root.innerHTML = `
+        <ul class="divide-y divide-line border-y border-line">
+          ${lines.map((l, i) => rowHtml(l, i)).join("")}
+        </ul>
+        <div class="mt-8 flex flex-col items-end gap-4">
+          <div class="flex w-full max-w-xs items-center justify-between">
+            <span class="u-label">Subtotal</span>
+            <span class="font-mono text-lg">${money(subtotal)}</span>
+          </div>
+          <p class="u-label text-right">Shipping & discounts calculated at checkout</p>
+          <button disabled class="w-full max-w-xs rounded-[var(--radius-brand)] bg-accent px-6 py-3.5 text-sm font-medium text-accent-ink opacity-40" title="Coming soon">
+            Secure checkout — coming soon
+          </button>
+        </div>`;
+
+      root.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const next = readBag();
+          next.splice(Number(btn.dataset.remove), 1);
+          writeBag(next);
+          render();
+        });
+      });
+    }
+
+    function rowHtml(l: BagLine, i: number) {
+      const img = l.image ? `${base}/api/images/${l.image}` : "";
+      return `
+        <li class="flex gap-4 py-5">
+          <a href="/products/${l.slug}" class="aspect-[4/5] w-20 shrink-0 overflow-hidden rounded-[var(--radius-brand)] bg-panel">
+            ${img ? `<img src="${img}" alt="" class="h-full w-full object-cover" />` : ""}
+          </a>
+          <div class="flex flex-1 items-start justify-between gap-4">
+            <div>
+              <a href="/products/${l.slug}" class="text-sm font-medium">${l.title}</a>
+              ${l.variantLabel ? `<div class="u-label mt-1">${l.variantLabel}</div>` : ""}
+              <div class="u-label mt-1">Qty ${l.qty}</div>
+            </div>
+            <div class="flex flex-col items-end gap-2">
+              <span class="font-mono text-sm">${money(l.price * l.qty)}</span>
+              <button data-remove="${i}" class="u-label hover:text-ink">Remove</button>
+            </div>
+          </div>
+        </li>`;
+    }
+
+    render();
+    window.addEventListener("bag:change", render);
+  </script>
+</Layout>

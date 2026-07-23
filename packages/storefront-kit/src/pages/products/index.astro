@@ -1,0 +1,90 @@
+---
+import Layout from "../../components/Layout.astro";
+import ProductCard from "../../components/ProductCard.astro";
+import { apiFor, type ProductQuery } from "../../lib/api";
+import type { Category, ProductCard as Card } from "../../lib/types";
+
+const url = Astro.url;
+const activeCat = url.searchParams.get("category") ?? undefined;
+const sortParam = url.searchParams.get("sort");
+const sort = (["newest", "price-asc", "price-desc"].includes(sortParam ?? "")
+  ? sortParam
+  : "newest") as ProductQuery["sort"];
+
+const api = apiFor(Astro);
+let products: Card[] = [];
+let total = 0;
+let categories: Category[] = [];
+try {
+  const [list, cats] = await Promise.all([
+    api.products({ category: activeCat, sort }),
+    api.categories(),
+  ]);
+  products = list.products;
+  total = list.total;
+  categories = cats;
+} catch {
+  /* API not up. */
+}
+
+const navCats = categories.filter((c) => c.productCount > 0).sort((a, b) => a.sortOrder - b.sortOrder);
+
+// Build a URL that keeps the current category but swaps the sort.
+const sortUrl = (s: string) => {
+  const q = new URLSearchParams();
+  if (activeCat) q.set("category", activeCat);
+  q.set("sort", s);
+  return `/products?${q.toString()}`;
+};
+const SORTS: [string, string][] = [
+  ["newest", "Newest"],
+  ["price-asc", "Price ↑"],
+  ["price-desc", "Price ↓"],
+];
+---
+
+<Layout title="Shop all" description="Browse the full collection.">
+  <div class="u-container py-12">
+    <header class="mb-8">
+      <span class="u-label">{total} {total === 1 ? "product" : "products"}</span>
+      <h1 class="mt-2 text-4xl">Shop all</h1>
+    </header>
+
+    <!-- Filters + sort -->
+    <div class="mb-8 flex flex-wrap items-center justify-between gap-4 border-y border-line py-3">
+      <div class="flex flex-wrap items-center gap-2">
+        <a
+          href="/products"
+          class:list={["rounded-full border px-3 py-1 text-sm transition-colors", !activeCat ? "border-ink bg-ink text-paper" : "border-line hover:border-ink"]}
+        >All</a>
+        {navCats.map((c) => (
+          <a
+            href={`/products?category=${c.slug}`}
+            class:list={["rounded-full border px-3 py-1 text-sm transition-colors", activeCat === c.slug ? "border-ink bg-ink text-paper" : "border-line hover:border-ink"]}
+          >{c.name}</a>
+        ))}
+      </div>
+
+      <div class="flex items-center gap-1">
+        <span class="u-label mr-1">Sort</span>
+        {SORTS.map(([value, label]) => (
+          <a
+            href={sortUrl(value)}
+            class:list={["rounded-[var(--radius-brand)] px-2.5 py-1 text-sm transition-colors", sort === value ? "bg-panel font-medium text-ink" : "text-muted hover:text-ink"]}
+          >{label}</a>
+        ))}
+      </div>
+    </div>
+
+    {products.length > 0 ? (
+      <div class="grid grid-cols-2 gap-x-5 gap-y-10 md:grid-cols-3 lg:grid-cols-4">
+        {products.map((p) => <ProductCard product={p} apiBase={api.base} />)}
+      </div>
+    ) : (
+      <div class="py-24 text-center">
+        <p class="u-label">Nothing here yet</p>
+        <p class="mt-2 text-muted">No products match this filter.</p>
+      </div>
+    )}
+  </div>
+</Layout>

@@ -1,0 +1,83 @@
+---
+import Layout from "../components/Layout.astro";
+import ProductCard from "../components/ProductCard.astro";
+import { apiFor } from "../lib/api";
+import { SITE } from "../lib/config";
+import type { Category, ProductCard as Card } from "../lib/types";
+
+const api = apiFor(Astro);
+let featured: Card[] = [];
+let categories: Category[] = [];
+try {
+  const [list, cats] = await Promise.all([api.products({ limit: 8 }), api.categories()]);
+  featured = list.products;
+  categories = cats;
+} catch {
+  /* API not up — render the shell. */
+}
+const collections = categories.filter((c) => !c.parentId && c.productCount > 0).slice(0, 3);
+---
+
+<Layout description={SITE.hero.sub}>
+  <!-- Hero -->
+  <section class="border-b border-line">
+    <div class="u-container grid gap-8 py-16 md:grid-cols-[1.1fr_0.9fr] md:items-end md:py-24">
+      <div>
+        <span class="u-label">{SITE.hero.eyebrow}</span>
+        <h1 class="mt-4 text-5xl md:text-7xl">{SITE.hero.heading}</h1>
+      </div>
+      <div class="md:pb-2">
+        <p class="max-w-md text-lg text-muted">{SITE.hero.sub}</p>
+        <a
+          href="/products"
+          class="mt-6 inline-flex items-center gap-2 rounded-[var(--radius-brand)] bg-accent px-5 py-3 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90"
+        >
+          Shop the collection
+          <span aria-hidden="true">→</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Featured -->
+  <section class="u-container py-16">
+    <div class="mb-8 flex items-end justify-between">
+      <h2 class="text-2xl">New in</h2>
+      <a href="/products" class="text-sm font-medium"><span class="u-underline">View all</span></a>
+    </div>
+    {featured.length > 0 ? (
+      <div class="grid grid-cols-2 gap-x-5 gap-y-10 md:grid-cols-3 lg:grid-cols-4">
+        {featured.map((p) => <ProductCard product={p} apiBase={api.base} />)}
+      </div>
+    ) : (
+      <p class="text-sm text-muted">No products yet. Add some in the Studio to see them here.</p>
+    )}
+  </section>
+
+  <!-- Collections -->
+  {collections.length > 0 && (
+    <section class="u-container pb-8">
+      <h2 class="mb-8 text-2xl">Collections</h2>
+      <div class="grid gap-5 sm:grid-cols-3">
+        {collections.map((c) => {
+          const cover = api.imageUrl(c.coverImageKey);
+          return (
+            <a href={`/collections/${c.slug}`} class="group relative block overflow-hidden rounded-[var(--radius-brand)] bg-panel">
+              <div class="aspect-[3/4]">
+                {cover && (
+                  <img src={cover} alt={c.name} loading="lazy" class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" />
+                )}
+              </div>
+              <div class="absolute inset-0 flex items-end bg-gradient-to-t from-ink/60 to-transparent p-5">
+                <div>
+                  <div class="font-display text-xl font-semibold text-paper">{c.name}</div>
+                  <div class="u-label !text-paper/80">{c.productCount} {c.productCount === 1 ? "item" : "items"}</div>
+                </div>
+              </div>
+            </a>
+          );
+        })}
+      </div>
+    </section>
+  )}
+</Layout>

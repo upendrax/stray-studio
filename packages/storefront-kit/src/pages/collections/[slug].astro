@@ -1,0 +1,62 @@
+---
+import Layout from "../../components/Layout.astro";
+import ProductCard from "../../components/ProductCard.astro";
+import { apiFor, NotFoundError } from "../../lib/api";
+import type { Category, ProductCard as Card } from "../../lib/types";
+
+const { slug } = Astro.params;
+const api = apiFor(Astro);
+
+let category: Category | null = null;
+let products: Card[] = [];
+try {
+  const res = await api.collection(slug!);
+  category = res.category;
+  products = res.products;
+} catch (err) {
+  if (err instanceof NotFoundError) return Astro.rewrite("/404");
+  throw err;
+}
+
+const cover = api.imageUrl(category!.coverImageKey);
+const title = category!.metaTitle?.trim() || category!.name;
+---
+
+<Layout title={category!.name} description={category!.metaDescription ?? category!.description ?? undefined}>
+  <!-- Banner -->
+  {cover ? (
+    <section class="relative border-b border-line">
+      <div class="aspect-[16/6] w-full overflow-hidden bg-panel">
+        <img src={cover} alt={category!.name} class="h-full w-full object-cover" />
+      </div>
+      <div class="absolute inset-0 flex items-end bg-gradient-to-t from-ink/60 to-transparent">
+        <div class="u-container pb-8">
+          <h1 class="text-4xl text-paper md:text-5xl">{title}</h1>
+          {category!.description && <p class="mt-2 max-w-xl text-paper/85">{category!.description}</p>}
+        </div>
+      </div>
+    </section>
+  ) : (
+    <section class="border-b border-line">
+      <div class="u-container py-12">
+        <span class="u-label">Collection</span>
+        <h1 class="mt-2 text-4xl md:text-5xl">{title}</h1>
+        {category!.description && <p class="mt-3 max-w-xl text-muted">{category!.description}</p>}
+      </div>
+    </section>
+  )}
+
+  <div class="u-container py-12">
+    <div class="mb-8"><span class="u-label">{products.length} {products.length === 1 ? "item" : "items"}</span></div>
+    {products.length > 0 ? (
+      <div class="grid grid-cols-2 gap-x-5 gap-y-10 md:grid-cols-3 lg:grid-cols-4">
+        {products.map((p) => <ProductCard product={p} apiBase={api.base} />)}
+      </div>
+    ) : (
+      <div class="py-24 text-center">
+        <p class="u-label">Empty for now</p>
+        <p class="mt-2 text-muted">This collection has no products yet.</p>
+      </div>
+    )}
+  </div>
+</Layout>

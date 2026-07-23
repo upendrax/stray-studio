@@ -1,0 +1,58 @@
+---
+import "../styles/global.css";
+import Header from "./Header.astro";
+import Footer from "./Footer.astro";
+import { apiFor } from "../lib/api";
+import { SITE } from "../lib/config";
+import type { Category, StoreSettings } from "../lib/types";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+const { title, description } = Astro.props;
+
+// Chrome data (store name + nav) — tolerate the API being unreachable so a
+// content page still renders during local setup.
+const api = apiFor(Astro);
+let settings: StoreSettings | null = null;
+let categories: Category[] = [];
+try {
+  [settings, categories] = await Promise.all([api.settings(), api.categories()]);
+} catch {
+  /* API not up yet — fall back to config defaults. */
+}
+
+const storeName = settings?.storeName?.trim() || SITE.fallbackName;
+const pageTitle = title ? `${title} · ${storeName}` : storeName;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    {description && <meta name="description" content={description} />}
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=Spline+Sans+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <Header storeName={storeName} categories={categories} />
+    <main>
+      <slot />
+    </main>
+    <Footer storeName={storeName} settings={settings} categories={categories} />
+
+    <script>
+      import { refreshBadges } from "../lib/bag";
+      refreshBadges();
+      window.addEventListener("bag:change", refreshBadges);
+      window.addEventListener("storage", refreshBadges);
+    </script>
+  </body>
+</html>

@@ -130,4 +130,176 @@ dev.post("/seed-orders", async (c) => {
   return c.json({ ok: true, created });
 });
 
+// ---------------------------------------------------------------------------
+// Sample catalog — attributes, categories, and simple+variable products (all
+// active), with SVG placeholder images written straight to R2. Lets the
+// storefront be built against real data before the owner adds products in the
+// Studio. Idempotent: products whose slug already exists are skipped.
+// ---------------------------------------------------------------------------
+
+type SeedDb = ReturnType<typeof createDb>;
+
+// A tall product-card placeholder: solid colour block + centered label.
+async function putPlaceholder(env: AppEnv["Bindings"], key: string, label: string, bg: string, fg: string) {
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000" viewBox="0 0 800 1000">` +
+    `<rect width="800" height="1000" fill="${bg}"/>` +
+    `<text x="400" y="510" font-family="system-ui,sans-serif" font-size="44" fill="${fg}" ` +
+    `text-anchor="middle" dominant-baseline="middle">${label}</text></svg>`;
+  await env.IMAGES.put(key, svg, { httpMetadata: { contentType: "image/svg+xml" } });
+}
+
+// Get an attribute by name or create it (avoids the unique-name conflict on
+// re-seed). Returns the attribute id plus a value-name -> valueId map.
+async function upsertAttribute(
+  db: SeedDb,
+  name: string,
+  opts: { useImages?: boolean; useColor?: boolean; position: number },
+  values: Array<{ value: string; color?: string }>,
+) {
+  let attr = await db.select().from(schema.attributes).where(eq(schema.attributes.name, name)).get();
+  if (!attr) {
+    const id = newId();
+    await db.insert(schema.attributes).values({
+      id, name, useImages: opts.useImages ?? false, useColor: opts.useColor ?? false, position: opts.position,
+    });
+    attr = await db.select().from(schema.attributes).where(eq(schema.attributes.id, id)).get();
+  }
+  const attrId = attr!.id;
+  const existing = await db.select().from(schema.attributeValues).where(eq(schema.attributeValues.attributeId, attrId)).all();
+  const byName = new Map(existing.map((v) => [v.value, v.id]));
+  for (const [i, v] of values.entries()) {
+    if (!byName.has(v.value)) {
+      const id = newId();
+      await db.insert(schema.attributeValues).values({ id, attributeId: attrId, value: v.value, color: v.color ?? null, position: i });
+      byName.set(v.value, id);
+    }
+  }
+  return { attrId, valueIds: byName };
+}
+
+async function upsertCategory(db: SeedDb, name: string, slug: string, parentId: string | null) {
+  const existing = await db.select().from(schema.categories).where(eq(schema.categories.slug, slug)).get();
+  if (existing) return existing.id;
+  const id = newId();
+  await db.insert(schema.categories).values({ id, name, slug, parentId });
+  return id;
+}
+
+dev.post("/seed-catalog", async (c) => {
+  const db = createDb(c.env.DB);
+
+  // Colour swatches (hex) — used for the storefront colour selector + per-colour
+  // placeholder images.
+  const colours: Record<string, string> = {
+    Black: "#111827", White: "#f4f4f5", Ecru: "#d9cdb8", Olive: "#5b6236", Navy: "#1e293b",
+  };
+  const colour = await upsertAttribute(
+    db, "Color", { useImages: true, useColor: true, position: 0 },
+    Object.entries(colours).map(([value, color]) => ({ value, color })),
+  );
+  const size = await upsertAttribute(
+    db, "Size", { position: 1 },
+    ["S", "M", "L", "XL"].map((value) => ({ value })),
+  );
+
+  const tops = await upsertCategory(db, "Tops", "tops", null);
+  const tees = await upsertCategory(db, "Tees", "tees", tops);
+  const shirts = await upsertCategory(db, "Shirts", "shirts", tops);
+  const accessories = await upsertCategory(db, "Accessories", "accessories", null);
+
+  // label used inside the placeholder image
+  const textFor = (name: string) => (["White", "Ecru"].includes(name) ? "#111827" : "#f4f4f5");
+
+  type SeedProduct = {
+    title: string; slug: string; basePrice: number; compareAt?: number;
+    categoryIds: string[]; description: string;
+    colours?: string[]; sizes?: string[]; // present => variable
+    simpleQty?: number; // simple product stock
+  };
+
+  const seeds: SeedProduct[] = [
+    { title: "Oversized Tee", slug: "oversized-tee", basePrice: 280000, compareAt: 350000, categoryIds: [tees], colours: ["Black", "White", "Ecru"], sizes: ["S", "M", "L", "XL"], description: "Heavyweight 240gsm cotton with a relaxed, boxy drop-shoulder fit." },
+    { title: "Linen Camp Shirt", slug: "linen-camp-shirt", basePrice: 480000, categoryIds: [shirts], colours: ["Ecru", "Olive"], sizes: ["S", "M", "L"], description: "Breathable pure-linen camp collar shirt for warm Colombo evenings." },
+    { title: "Classic Crew Tee", slug: "classic-crew-tee", basePrice: 220000, categoryIds: [tees], colours: ["White", "Black", "Navy"], sizes: ["S", "M", "L", "XL"], description: "The everyday crew neck in soft combed cotton." },
+    { title: "Dad Cap", slug: "dad-cap", basePrice: 150000, categoryIds: [accessories], simpleQty: 40, description: "Six-panel unstructured cap with an adjustable strap." },
+    { title: "Canvas Tote", slug: "canvas-tote", basePrice: 190000, categoryIds: [accessories], simpleQty: 25, description: "Sturdy 12oz cotton canvas tote that carries a week of market runs." },
+    { title: "Ribbed Tank", slug: "ribbed-tank", basePrice: 190000, categoryIds: [tees], simpleQty: 30, description: "Slim ribbed tank in a stretch cotton blend." },
+  ];
+
+  const created: string[] = [];
+  const skipped: string[] = [];
+
+  for (const s of seeds) {
+    const exists = await db.select({ id: schema.products.id }).from(schema.products).where(eq(schema.products.slug, s.slug)).get();
+    if (exists) { skipped.push(s.slug); continue; }
+
+    const productId = newId();
+    const isVariable = Boolean(s.colours && s.sizes);
+    await db.insert(schema.products).values({
+      id: productId, title: s.title, slug: s.slug, description: s.description,
+      status: "active", hasOptions: isVariable, basePrice: s.basePrice, compareAtPrice: s.compareAt ?? null,
+    });
+    for (const categoryId of s.categoryIds) {
+      await db.insert(schema.productCategories).values({ productId, categoryId });
+    }
+
+    if (!isVariable) {
+      // Simple product: one default variant + one default image.
+      const imgKey = `seed/${productId}.svg`;
+      await putPlaceholder(c.env, imgKey, s.title, "#e7e5e4", "#111827");
+      await db.insert(schema.productImages).values({ id: newId(), productId, r2Key: imgKey, sortOrder: 0 });
+      await db.insert(schema.variants).values({ id: newId(), productId, price: null, quantity: s.simpleQty ?? 20, available: true, position: 0 });
+      created.push(s.slug);
+      continue;
+    }
+
+    // Variable product: Color × Size grid, per-colour image + swatch.
+    const colourOptionId = newId();
+    await db.insert(schema.productOptions).values({ id: colourOptionId, productId, attributeId: colour.attrId, position: 0 });
+    const sizeOptionId = newId();
+    await db.insert(schema.productOptions).values({ id: sizeOptionId, productId, attributeId: size.attrId, position: 1 });
+
+    // Colour option values (+ per-value placeholder image), map attrValueId -> pov.id
+    const colourPov = new Map<string, string>();
+    for (const [i, name] of s.colours!.entries()) {
+      const attrValueId = colour.valueIds.get(name)!;
+      const povId = newId();
+      colourPov.set(attrValueId, povId);
+      await db.insert(schema.productOptionValues).values({ id: povId, optionId: colourOptionId, attributeValueId: attrValueId, position: i });
+      const imgKey = `seed/${productId}-${name.toLowerCase()}.svg`;
+      await putPlaceholder(c.env, imgKey, `${s.title} — ${name}`, colours[name]!, textFor(name));
+      await db.insert(schema.optionValueImages).values({ id: newId(), optionValueId: povId, r2Key: imgKey, sortOrder: 0 });
+      // Also seed the product-level gallery from the first colour.
+      if (i === 0) await db.insert(schema.productImages).values({ id: newId(), productId, r2Key: imgKey, sortOrder: 0 });
+    }
+    const sizePov = new Map<string, string>();
+    for (const [i, name] of s.sizes!.entries()) {
+      const attrValueId = size.valueIds.get(name)!;
+      const povId = newId();
+      sizePov.set(attrValueId, povId);
+      await db.insert(schema.productOptionValues).values({ id: povId, optionId: sizeOptionId, attributeValueId: attrValueId, position: i });
+    }
+
+    // Cartesian variants. Vary stock a little; make one combo out of stock.
+    let pos = 0;
+    for (const cName of s.colours!) {
+      for (const zName of s.sizes!) {
+        const cAttrValue = colour.valueIds.get(cName)!;
+        const zAttrValue = size.valueIds.get(zName)!;
+        const variantId = newId();
+        const qty = zName === "XL" && cName === s.colours![0] ? 0 : 5 + ((pos * 3) % 11);
+        await db.insert(schema.variants).values({ id: variantId, productId, price: null, quantity: qty, available: true, position: pos++ });
+        await db.insert(schema.variantOptionValues).values([
+          { variantId, optionValueId: colourPov.get(cAttrValue)! },
+          { variantId, optionValueId: sizePov.get(zAttrValue)! },
+        ]);
+      }
+    }
+    created.push(s.slug);
+  }
+
+  return c.json({ ok: true, created, skipped });
+});
+
 export { dev as devRoutes };
