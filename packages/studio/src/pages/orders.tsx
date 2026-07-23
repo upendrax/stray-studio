@@ -40,13 +40,14 @@ const PAY_LABELS: Record<PaymentMethod, string> = {
 const HEAD = "text-[11px] uppercase tracking-wider text-muted-foreground";
 
 export default function Orders() {
-  const { orders, mutateOrder } = useStore();
+  const { orders, ordersLoading, setOrderStatus } = useStore();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const tab = (params.get("tab") as Tab) ?? "All";
   const [search, setSearch] = useState("");
   const [pay, setPay] = useState<"all" | PaymentMethod>("all");
   const [selected, setSelected] = useState<Record<number, boolean>>({});
+  const [busy, setBusy] = useState(false);
 
   const counts = useMemo(() => {
     const c: Record<Tab, number> = { All: orders.length, Pending: 0, Paid: 0, Shipped: 0, Delivered: 0, Cancelled: 0 };
@@ -75,16 +76,23 @@ export default function Orders() {
   const allSelected =
     filtered.length > 0 && filtered.every((o) => selected[o.num]);
 
-  const bulkAdvance = (from: "Paid" | "Shipped", to: "Shipped" | "Delivered") => {
+  const bulkAdvance = async (from: "Paid" | "Shipped", to: "Shipped" | "Delivered") => {
     const eligible = orders.filter((o) => selectedNums.includes(o.num) && o.status === from);
-    for (const o of eligible)
-      mutateOrder(o.num, (n) => { n.status = to; }, `Marked as ${to.toLowerCase()}`);
-    const skipped = selectedNums.length - eligible.length;
-    toast(
-      `${eligible.length} order${eligible.length === 1 ? "" : "s"} marked as ${to.toLowerCase()}` +
-        (skipped > 0 ? ` — ${skipped} skipped (not ${from})` : ""),
-    );
-    setSelected({});
+    setBusy(true);
+    try {
+      for (const o of eligible)
+        await setOrderStatus(o.num, to.toLowerCase(), { message: `Marked as ${to.toLowerCase()}` });
+      const skipped = selectedNums.length - eligible.length;
+      toast(
+        `${eligible.length} order${eligible.length === 1 ? "" : "s"} marked as ${to.toLowerCase()}` +
+          (skipped > 0 ? ` — ${skipped} skipped (not ${from})` : ""),
+      );
+      setSelected({});
+    } catch {
+      toast("Something went wrong — please try again");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -137,17 +145,21 @@ export default function Orders() {
             <span className="text-xs text-muted-foreground">
               {selectedNums.length} selected
             </span>
-            <Button variant="outline" size="sm" onClick={() => bulkAdvance("Paid", "Shipped")}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => bulkAdvance("Paid", "Shipped")}>
               Mark as shipped
             </Button>
-            <Button variant="outline" size="sm" onClick={() => bulkAdvance("Shipped", "Delivered")}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => bulkAdvance("Shipped", "Delivered")}>
               Mark as delivered
             </Button>
           </div>
         )}
       </div>
 
-      {filtered.length > 0 ? (
+      {ordersLoading ? (
+        <Card className="flex items-center justify-center px-6 py-12 text-muted-foreground shadow-sm">
+          <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+        </Card>
+      ) : filtered.length > 0 ? (
         <Card className="gap-0 overflow-hidden py-0">
           <Table>
             <TableHeader>
@@ -196,7 +208,7 @@ export default function Orders() {
                     )}
                   </TableCell>
                   <TableCell className="text-right text-muted-foreground tabular-nums">
-                    {o.lines.reduce((s, l) => s + l.qty, 0)}
+                    {o.itemCount ?? 0}
                   </TableCell>
                   <TableCell className="text-right font-medium tabular-nums">{money(o.total)}</TableCell>
                   <TableCell className="text-muted-foreground">{PAY_LABELS[o.pay]}</TableCell>

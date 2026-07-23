@@ -25,34 +25,76 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import type { OrderStatus } from "@/lib/mock-data";
+import { ApiError } from "@/lib/api";
+import type { Order, OrderStatus } from "@/lib/mock-data";
 
 type DialogKind = "ship" | "reject" | "cancel" | "refund" | null;
 
 export default function OrderDetail() {
   const { num } = useParams();
   const navigate = useNavigate();
-  const { orders, mutateOrder } = useStore();
+  const { getOrder, setOrderStatus, orderSlip, addOrderNote, setOrderNote } = useStore();
 
+  const [o, setO] = useState<Order | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [shipCourier, setShipCourier] = useState("");
   const [shipTracking, setShipTracking] = useState("");
   const [rejectReason, setRejectReason] = useState("");
   const [refundRef, setRefundRef] = useState("");
-  const [noteInput, setNoteInput] = useState("");
+  const [timelineNote, setTimelineNote] = useState(""); // "Add note" → timeline event
+  const [privateNote, setPrivateNote] = useState(""); // right-rail Notes card
 
-  const order = orders.find((o) => o.num === Number(num));
+  const orderNum = Number(num);
   useEffect(() => {
-    setNoteInput(order?.note ?? "");
-  }, [order?.num]);
-  if (!order) {
+    let alive = true;
+    setLoading(true);
+    getOrder(orderNum)
+      .then((ord) => {
+        if (!alive) return;
+        setO(ord);
+        setPrivateNote(ord.note ?? "");
+      })
+      .catch(() => {
+        if (alive) setNotFound(true);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [orderNum, getOrder]);
+
+  if (notFound) {
     return (
       <Card className="px-6 py-12 text-center text-muted-foreground shadow-sm">
         Order not found.
       </Card>
     );
   }
-  const o = order;
+  if (loading || !o) {
+    return (
+      <Card className="flex items-center justify-center px-6 py-16 text-muted-foreground shadow-sm">
+        <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+      </Card>
+    );
+  }
+
+  // Run an order action, swap in the returned order, toast, and surface errors.
+  const run = async (fn: () => Promise<Order>, ok: string) => {
+    setBusy(true);
+    try {
+      setO(await fn());
+      toast(ok);
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const payView: [string, string] =
     o.pay === "payhere"
@@ -84,63 +126,61 @@ export default function OrderDetail() {
 
   const advance = () => {
     if (o.status === "Pending") {
-      mutateOrder(o.num, (n) => { n.status = "Paid"; }, "Marked as paid");
-      toast("Order marked as paid");
+      run(() => setOrderStatus(o.num, "paid", { message: "Marked as paid" }), "Order marked as paid");
     } else if (o.status === "Paid") {
       setShipCourier("");
       setShipTracking("");
       setDialog("ship");
     } else if (o.status === "Shipped") {
-      mutateOrder(o.num, (n) => { n.status = "Delivered"; }, "Marked as delivered");
-      toast("Order marked as delivered");
+      run(() => setOrderStatus(o.num, "delivered", { message: "Marked as delivered" }), "Order marked as delivered");
     }
   };
 
   const confirmShip = () => {
-    mutateOrder(o.num, (n) => {
-      n.status = "Shipped";
-      if (shipCourier.trim() || shipTracking.trim())
-        n.tracking = { courier: shipCourier.trim() || "—", number: shipTracking.trim() };
-    }, "Marked as shipped");
-    toast("Order marked as shipped — customer notified");
+    run(
+      () =>
+        setOrderStatus(o.num, "shipped", {
+          courierName: shipCourier.trim() || undefined,
+          trackingNumber: shipTracking.trim() || undefined,
+          message: "Marked as shipped",
+        }),
+      "Order marked as shipped — customer notified",
+    );
     setDialog(null);
   };
 
-  const approveSlip = () => {
-    mutateOrder(o.num, (n) => { n.status = "Paid"; n.slip = false; }, "Payment approved (bank slip)");
-    toast("Payment approved — order moved to Paid");
-  };
+  const approveSlip = () =>
+    run(() => orderSlip(o.num, "approve"), "Payment approved — order moved to Paid");
 
   const confirmReject = () => {
-    mutateOrder(o.num, (n) => { n.slip = false; }, "Bank slip rejected — customer notified");
-    toast("Slip rejected — customer notified");
+    run(() => orderSlip(o.num, "reject", rejectReason.trim() || undefined), "Slip rejected — customer notified");
     setDialog(null);
   };
 
   const confirmCancel = () => {
-    mutateOrder(o.num, (n) => { n.status = "Cancelled"; }, "Order cancelled — items restocked");
-    toast("Order cancelled — items restocked");
+    run(() => setOrderStatus(o.num, "cancelled", { message: "Order cancelled — items restocked" }), "Order cancelled — items restocked");
     setDialog(null);
   };
 
   const confirmRefund = () => {
-    mutateOrder(o.num, (n) => { n.status = "Refunded"; }, refundRef.trim() ? `Refund recorded — ref ${refundRef.trim()}` : "Refund recorded");
-    toast("Refund recorded");
+    const ref = refundRef.trim();
+    run(
+      () => setOrderStatus(o.num, "refunded", { refundReference: ref || undefined, message: ref ? `Refund recorded — ref ${ref}` : "Refund recorded" }),
+      "Refund recorded",
+    );
     setDialog(null);
   };
 
   const revert = () => {
     const back = ({ Paid: "Pending", Shipped: "Paid", Delivered: "Shipped" } as Partial<Record<OrderStatus, OrderStatus>>)[o.status];
     if (!back) return;
-    mutateOrder(o.num, (n) => { n.status = back; }, `Reverted to ${back}`);
-    toast(`Order reverted to ${back}`);
+    run(() => setOrderStatus(o.num, back.toLowerCase(), { message: `Reverted to ${back}` }), `Order reverted to ${back}`);
   };
 
-  const addNote = () => {
-    if (!noteInput.trim()) return;
-    mutateOrder(o.num, () => {}, noteInput.trim(), { note: true });
-    setNoteInput("");
-    toast("Note added");
+  const addNote = async () => {
+    if (!timelineNote.trim()) return;
+    await run(() => addOrderNote(o.num, timelineNote.trim()), "Note added");
+    setTimelineNote("");
   };
 
   const copy = (text: string, label: string) => {
@@ -151,10 +191,7 @@ export default function OrderDetail() {
 
   const saveNote = (value: string) => {
     if (value === (o.note ?? "")) return;
-    mutateOrder(o.num, (n) => {
-      n.note = value;
-    });
-    toast("Note saved");
+    run(() => setOrderNote(o.num, value), "Note saved");
   };
 
   return (
@@ -177,7 +214,7 @@ export default function OrderDetail() {
         <span className="text-xs text-muted-foreground">{relLong(o.min)}</span>
         <div className="flex-1" />
         {nextLabel && (
-          <Button size="sm" onClick={advance}>
+          <Button size="sm" onClick={advance} disabled={busy}>
             {nextLabel}
           </Button>
         )}
@@ -291,7 +328,7 @@ export default function OrderDetail() {
                       reference, then approve or reject.
                     </div>
                     <div className="flex gap-2">
-                      <Button size="sm" onClick={approveSlip}>
+                      <Button size="sm" onClick={approveSlip} disabled={busy}>
                         Approve payment
                       </Button>
                       <Button
@@ -313,13 +350,13 @@ export default function OrderDetail() {
             <div className="border-b px-4 py-3 font-semibold">Timeline</div>
             <div className="flex gap-2 border-b px-4 py-3">
               <Input
-                value={noteInput}
-                onChange={(e) => setNoteInput(e.target.value)}
+                value={timelineNote}
+                onChange={(e) => setTimelineNote(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") addNote(); }}
                 placeholder="Add an internal note (never shown to the customer)"
                 className="h-9"
               />
-              <Button size="sm" variant="outline" onClick={addNote}>
+              <Button size="sm" variant="outline" onClick={addNote} disabled={busy}>
                 Add note
               </Button>
             </div>
@@ -391,9 +428,9 @@ export default function OrderDetail() {
           <Card className="gap-0 px-4 py-3.5">
             <div className="mb-2 font-semibold">Notes</div>
             <Textarea
-              value={noteInput}
-              onChange={(e) => setNoteInput(e.target.value)}
-              onBlur={() => saveNote(noteInput.trim())}
+              value={privateNote}
+              onChange={(e) => setPrivateNote(e.target.value)}
+              onBlur={() => saveNote(privateNote.trim())}
               placeholder="Add a private note about this order…"
               className="min-h-[64px] resize-none text-xs"
             />

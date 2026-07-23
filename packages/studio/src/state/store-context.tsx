@@ -9,7 +9,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  seedOrders,
   seedSettings,
   type AttributeDef,
   type AttributeValue,
@@ -19,6 +18,7 @@ import {
   type Discount,
   type Order,
   type OrderStatus,
+  type PaymentMethod,
   type ProductSummary,
   type ApiProduct,
   type ProductWriteBody,
@@ -235,6 +235,131 @@ function mapCustomer(a: ApiCustomer): Customer {
   };
 }
 
+// Orders. The list endpoint returns summary rows; detail + every action
+// endpoint return the full order (row + items + events).
+interface ApiOrderSummary {
+  id: string;
+  number: number;
+  status: string;
+  shipName: string;
+  email: string;
+  phone: string;
+  guest: boolean;
+  total: number;
+  paymentMethod: PaymentMethod;
+  paymentStatus: string;
+  slipR2Key: string | null;
+  slipUploadedAt: number | null;
+  discountCode: string | null;
+  itemCount: number;
+  createdAt: number;
+}
+interface ApiOrderItem {
+  title: string;
+  variantTitle: string | null;
+  sku: string | null;
+  unitPrice: number;
+  quantity: number;
+}
+interface ApiOrderEvent {
+  type: string;
+  message: string;
+  actorType: "admin" | "customer" | "system";
+  createdAt: number;
+}
+interface ApiOrderDetail {
+  id: string;
+  number: number;
+  status: string;
+  userId: string | null;
+  email: string;
+  phone: string;
+  shipName: string;
+  shipLine1: string;
+  shipLine2: string | null;
+  shipCity: string;
+  subtotal: number;
+  discountAmount: number;
+  discountCode: string | null;
+  shippingAmount: number;
+  total: number;
+  paymentMethod: PaymentMethod;
+  paymentStatus: string;
+  payhereRef: string | null;
+  slipUploadedAt: number | null;
+  courierName: string | null;
+  trackingNumber: string | null;
+  note: string | null;
+  createdAt: number;
+  items: ApiOrderItem[];
+  events: ApiOrderEvent[];
+}
+
+const eventActor = (a: ApiOrderEvent["actorType"]) =>
+  a === "admin" ? "by Rashmi (owner)" : a === "customer" ? "by customer" : "system";
+
+function mapOrderSummary(o: ApiOrderSummary): Order {
+  return {
+    num: o.number,
+    min: minutesAgo(o.createdAt),
+    cust: o.shipName,
+    guest: o.guest,
+    email: o.email,
+    phone: o.phone,
+    pay: o.paymentMethod,
+    status: capStatus(o.status),
+    lines: [],
+    ship: 0,
+    disc: null,
+    subtotal: 0,
+    total: o.total / 100,
+    address: "",
+    events: [],
+    orderCount: "",
+    tracking: null,
+    slip: o.slipUploadedAt !== null && o.paymentStatus === "pending",
+    itemCount: o.itemCount,
+  };
+}
+
+function mapOrderDetail(o: ApiOrderDetail): Order {
+  return {
+    num: o.number,
+    min: minutesAgo(o.createdAt),
+    cust: o.shipName,
+    guest: o.userId === null,
+    email: o.email,
+    phone: o.phone,
+    pay: o.paymentMethod,
+    status: capStatus(o.status),
+    lines: o.items.map((it) => ({
+      name: it.title,
+      variant: it.variantTitle ?? "",
+      sku: it.sku ?? "",
+      qty: it.quantity,
+      price: it.unitPrice / 100,
+    })),
+    ship: o.shippingAmount / 100,
+    disc: o.discountCode ? { code: o.discountCode, amount: o.discountAmount / 100 } : null,
+    subtotal: o.subtotal / 100,
+    total: o.total / 100,
+    address: [o.shipLine1, o.shipLine2, o.shipCity].filter(Boolean).join("\n"),
+    events: o.events.map((e) => ({
+      min: minutesAgo(e.createdAt),
+      title: e.message,
+      actor: eventActor(e.actorType),
+      note: e.type === "note",
+    })),
+    orderCount: "",
+    tracking: o.trackingNumber ? { courier: o.courierName ?? "—", number: o.trackingNumber } : null,
+    note: o.note ?? undefined,
+    payRef: o.payhereRef ?? undefined,
+    slip: o.slipUploadedAt !== null && o.paymentStatus === "pending",
+    slipMin: o.slipUploadedAt !== null ? minutesAgo(o.slipUploadedAt) : undefined,
+    itemCount: o.items.reduce((s, it) => s + it.quantity, 0),
+  };
+}
+
 function discountBody(d: Discount, pathToId: Map<string, string>) {
   return {
     code: d.code.trim(),
@@ -265,6 +390,7 @@ function discountBody(d: Discount, pathToId: Map<string, string>) {
 
 interface StoreState {
   orders: Order[];
+  ordersLoading: boolean;
   productSummaries: ProductSummary[];
   productsLoading: boolean;
   discounts: Discount[];
@@ -279,7 +405,16 @@ interface StoreState {
   settingsDirty: boolean;
   pendingCount: number;
   actorLabel: string;
-  mutateOrder: (num: number, fn: (o: Order) => void, eventTitle?: string, opts?: { note?: boolean }) => void;
+  // Orders: the list holds summaries; detail + actions return the full order.
+  getOrder: (num: number) => Promise<Order>;
+  setOrderStatus: (
+    num: number,
+    status: string,
+    opts?: { courierName?: string; trackingNumber?: string; refundReference?: string; message?: string },
+  ) => Promise<Order>;
+  orderSlip: (num: number, action: "approve" | "reject", reason?: string) => Promise<Order>;
+  addOrderNote: (num: number, message: string) => Promise<Order>;
+  setOrderNote: (num: number, note: string) => Promise<Order>;
   // Real product-list actions (the summaries come from the API).
   bulkProducts: (
     action: "delete" | "status" | "addCategory",
@@ -310,7 +445,8 @@ const StoreContext = createContext<StoreState | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const { status } = useAuth();
-  const [orders, setOrders] = useState<Order[]>(seedOrders);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(true);
   const [productSummaries, setProductSummaries] = useState<ProductSummary[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [discounts, setDiscounts] = useState<Discount[]>([]);
@@ -363,6 +499,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const reloadCustomers = useCallback(async () => {
     const res = await api.get<{ customers: ApiCustomer[] }>("/api/admin/customers");
     setCustomers(res.customers.map(mapCustomer));
+  }, []);
+
+  const reloadOrders = useCallback(async () => {
+    const res = await api.get<{ orders: ApiOrderSummary[] }>("/api/admin/orders");
+    setOrders(res.orders.map(mapOrderSummary));
   }, []);
 
   // Load API-backed data once the session is confirmed. Gating on `authed`
@@ -436,30 +577,61 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (alive) setCustomersLoading(false);
       });
 
+    // Orders: list summaries (detail is fetched per-order).
+    reloadOrders()
+      .catch(() => {
+        /* leave orders empty on failure */
+      })
+      .finally(() => {
+        if (alive) setOrdersLoading(false);
+      });
+
     return () => {
       alive = false;
     };
-  }, [status, reloadCategories, reloadProducts, reloadDiscounts, reloadCustomers]);
+  }, [status, reloadCategories, reloadProducts, reloadDiscounts, reloadCustomers, reloadOrders]);
 
   const actorLabel = "by Rashmi (owner)";
 
-  const mutateOrder = useCallback<StoreState["mutateOrder"]>(
-    (num, fn, eventTitle, opts) => {
-      setOrders((prev) =>
-        prev.map((o) => {
-          if (o.num !== num) return o;
-          const n: Order = { ...o, lines: o.lines, events: [...o.events] };
-          fn(n);
-          if (eventTitle)
-            n.events = [
-              { min: 0, title: eventTitle, actor: actorLabel, note: opts?.note },
-              ...n.events,
-            ];
-          return n;
-        }),
+  const getOrder = useCallback<StoreState["getOrder"]>(async (num) => {
+    const res = await api.get<{ order: ApiOrderDetail }>(`/api/admin/orders/${num}`);
+    return mapOrderDetail(res.order);
+  }, []);
+
+  // Each action endpoint returns the full order; the list summaries refresh too.
+  const orderAction = useCallback(
+    async (num: number, path: string, body: unknown): Promise<Order> => {
+      const res = await api.post<{ order: ApiOrderDetail }>(
+        `/api/admin/orders/${num}/${path}`,
+        body,
       );
+      await reloadOrders();
+      return mapOrderDetail(res.order);
     },
-    [actorLabel],
+    [reloadOrders],
+  );
+
+  const setOrderStatus = useCallback<StoreState["setOrderStatus"]>(
+    (num, status, opts) => orderAction(num, "status", { status, ...opts }),
+    [orderAction],
+  );
+
+  const orderSlip = useCallback<StoreState["orderSlip"]>(
+    (num, action, reason) => orderAction(num, "slip", { action, reason }),
+    [orderAction],
+  );
+
+  const addOrderNote = useCallback<StoreState["addOrderNote"]>(
+    (num, message) => orderAction(num, "note", { message }),
+    [orderAction],
+  );
+
+  const setOrderNote = useCallback<StoreState["setOrderNote"]>(
+    async (num, note) => {
+      const res = await api.patch<{ order: ApiOrderDetail }>(`/api/admin/orders/${num}`, { note });
+      return mapOrderDetail(res.order);
+    },
+    [],
   );
 
   const bulkProducts = useCallback<StoreState["bulkProducts"]>(
@@ -629,6 +801,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const value = useMemo<StoreState>(
     () => ({
       orders,
+      ordersLoading,
       productSummaries,
       productsLoading,
       discounts,
@@ -643,7 +816,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       settingsDirty: JSON.stringify(settings) !== settingsSnap,
       pendingCount: orders.filter((o) => o.status === "Pending").length,
       actorLabel,
-      mutateOrder,
+      getOrder,
+      setOrderStatus,
+      orderSlip,
+      addOrderNote,
+      setOrderNote,
       bulkProducts,
       getProduct,
       saveProduct,
@@ -661,8 +838,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       anonymizeCustomer,
     }),
     [
-      orders, productSummaries, productsLoading, discounts, discountsLoading, customers, customersLoading, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
-      mutateOrder, bulkProducts, getProduct, saveProduct, deleteProduct, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
+      orders, ordersLoading, productSummaries, productsLoading, discounts, discountsLoading, customers, customersLoading, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
+      getOrder, setOrderStatus, orderSlip, addOrderNote, setOrderNote, bulkProducts, getProduct, saveProduct, deleteProduct, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
       upsertCategory, deleteCategory, patchSettings, saveSettings,
       discardSettings, getCustomer, anonymizeCustomer,
     ],

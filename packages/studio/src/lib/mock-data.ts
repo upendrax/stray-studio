@@ -150,6 +150,7 @@ export interface Order {
   payRef?: string;
   slip?: boolean;
   slipMin?: number;
+  itemCount?: number; // total line quantity (list summaries carry this)
 }
 
 export function cartesian<T>(lists: T[][]): T[][] {
@@ -160,62 +161,7 @@ export function cartesian<T>(lists: T[][]): T[][] {
 }
 
 
-const ADDRESS = "No. 24, Flower Road\nColombo 07\nWestern Province, 00700";
 
-function mkOrder(
-  num: number,
-  min: number,
-  cust: string,
-  guest: boolean,
-  email: string,
-  phone: string,
-  pay: PaymentMethod,
-  status: OrderStatus,
-  lines: OrderLine[],
-  ship: number,
-  disc: { code: string; amount: number } | null,
-  extra: Partial<Order> = {},
-): Order {
-  const subtotal = lines.reduce((s, l) => s + l.qty * l.price, 0);
-  const total = subtotal - (disc ? disc.amount : 0) + ship;
-  const events: OrderEvent[] = [];
-  if (status === "Delivered")
-    events.push({ min: min - 4000 < 0 ? 30 : min - 4300, title: "Delivered", actor: "by Rashmi (owner)" });
-  if (status === "Delivered" || status === "Shipped")
-    events.push({ min: Math.max(20, min - 2000), title: "Marked as shipped", actor: "by Rashmi (owner)" });
-  if (pay === "payhere" && status !== "Pending" && status !== "Cancelled")
-    events.push({ min: min - 1, title: "Payment received via PayHere", actor: "automatic" });
-  if (status === "Cancelled")
-    events.push({ min: min - 300 > 0 ? min - 300 : 10, title: "Order cancelled — items restocked", actor: "by Rashmi (owner)" });
-  if (status === "Refunded")
-    events.push({ min: min - 5000 > 0 ? min - 5000 : 10, title: "Refund recorded", actor: "by Rashmi (owner)" });
-  if (extra.slip)
-    events.push({ min: extra.slipMin ?? min, title: "Bank slip uploaded", actor: "by customer" });
-  events.push({ min, title: "Order placed", actor: "by customer" });
-  return {
-    num, min, cust, guest, email, phone, pay, status, lines, ship, disc,
-    subtotal, total,
-    address: `${cust}\n${ADDRESS}`,
-    events,
-    orderCount: guest ? "First order" : "3rd order",
-    tracking: null,
-    ...extra,
-  };
-}
-
-export const seedOrders: Order[] = [
-  mkOrder(1046, 22, "Nethmi Perera", false, "nethmi.p@gmail.com", "+94 77 123 4567", "payhere", "Paid", [{ name: "Oversized Tee", variant: "Red / M", sku: "OT-RD-M", qty: 1, price: 2800 }, { name: "Dad Cap", variant: "", sku: "DC-05", qty: 1, price: 1500 }], 400, null, { payRef: "PH-320481022" }),
-  mkOrder(1045, 64, "Kasun Silva", true, "kasun.silva@yahoo.com", "+94 71 555 0192", "payhere", "Pending", [{ name: "Classic Crew Tee", variant: "White / L", sku: "CC-WH-L", qty: 2, price: 2200 }], 400, null, { orderCount: "First order" }),
-  mkOrder(1044, 180, "Dilini Fernando", false, "dilini.f@outlook.com", "+94 76 220 8834", "payhere", "Paid", [{ name: "Boxy Heavyweight Tee", variant: "Ecru / L", sku: "BH-EC-L", qty: 1, price: 3200 }, { name: "Oversized Tee", variant: "Black / L", sku: "OT-BK-L", qty: 1, price: 2800 }, { name: "Ribbed Tank", variant: "", sku: "RT-02", qty: 1, price: 1900 }], 0, null, { payRef: "PH-320480311" }),
-  mkOrder(1043, 360, "Amaya Jayasuriya", false, "amaya.jay@gmail.com", "+94 70 889 4412", "payhere", "Shipped", [{ name: "Linen Camp Shirt", variant: "", sku: "LCS-01", qty: 1, price: 4800 }, { name: "Dad Cap", variant: "", sku: "DC-05", qty: 1, price: 1500 }], 0, null, { payRef: "PH-320478190", tracking: { courier: "Koombiyo", number: "LK4429810" } }),
-  mkOrder(1042, 1560, "Ruwan Wickramasinghe", false, "ruwan.w@gmail.com", "+94 77 640 2277", "bank", "Pending", [{ name: "Linen Camp Shirt", variant: "", sku: "LCS-01", qty: 1, price: 4800 }], 400, { code: "WELCOME10", amount: 480 }, { slip: true, slipMin: 1380 }),
-  mkOrder(1041, 1740, "Shenali Gunawardena", false, "shenali.g@gmail.com", "+94 75 301 9945", "payhere", "Shipped", [{ name: "Oversized Tee", variant: "Black / M", sku: "OT-BK-M", qty: 1, price: 2800 }, { name: "Classic Crew Tee", variant: "Black / S", sku: "CC-BK-S", qty: 1, price: 2200 }], 400, null, { payRef: "PH-320475622", tracking: { courier: "Pronto", number: "PR-118842" } }),
-  mkOrder(1040, 2980, "Tharindu Bandara", false, "tharindu.b@gmail.com", "+94 71 776 5023", "payhere", "Delivered", [{ name: "Ribbed Tank", variant: "", sku: "RT-02", qty: 1, price: 1900 }, { name: "Dad Cap", variant: "", sku: "DC-05", qty: 1, price: 1500 }], 400, null, { payRef: "PH-320471055" }),
-  mkOrder(1039, 4400, "Ishara Madushani", false, "ishara.m@gmail.com", "+94 76 402 1188", "payhere", "Delivered", [{ name: "Oversized Tee", variant: "White / S", sku: "OT-WH-S", qty: 2, price: 2800 }, { name: "Boxy Heavyweight Tee", variant: "Charcoal / M", sku: "BH-CH-M", qty: 1, price: 3200 }], 0, null, { payRef: "PH-320465921" }),
-  mkOrder(1038, 5900, "Sachini Rathnayake", true, "sachini.r@gmail.com", "+94 70 233 7789", "payhere", "Cancelled", [{ name: "Classic Crew Tee", variant: "White / M", sku: "CC-WH-M", qty: 1, price: 2200 }], 400, null, { orderCount: "First order" }),
-  mkOrder(1037, 13100, "Nadeesha Herath", false, "nadeesha.h@gmail.com", "+94 77 918 3345", "bank", "Refunded", [{ name: "Linen Camp Shirt", variant: "", sku: "LCS-01", qty: 1, price: 4800 }, { name: "Dad Cap", variant: "", sku: "DC-05", qty: 1, price: 1500 }], 0, null, {}),
-  mkOrder(1036, 17400, "Chamodi Alwis", false, "chamodi.a@gmail.com", "+94 71 450 6671", "payhere", "Delivered", [{ name: "Oversized Tee", variant: "Red / L", sku: "OT-RD-L", qty: 1, price: 2800 }, { name: "Classic Crew Tee", variant: "Black / M", sku: "CC-BK-M", qty: 1, price: 2200 }], 400, null, { payRef: "PH-320441002" }),
-];
 
 // ---------------------------------------------------------------------------
 // Attributes — global option definitions. Products pick from these; the only
