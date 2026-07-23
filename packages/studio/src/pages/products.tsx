@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useStore } from "@/state/store-context";
 import { moneyShort, rel } from "@/lib/format";
+import { imageUrl } from "@/lib/api";
 import { summaryStock, type ProductSummary, type StockLevel } from "@/lib/mock-data";
 import { StockDot } from "@/components/stock-dot";
 import { Input } from "@/components/ui/input";
@@ -256,9 +257,13 @@ export default function Products() {
                     <TableCell>
                       <button
                         onClick={() => navigate(`/products/${p.id}`)}
-                        className="flex size-10 items-center justify-center rounded-md border bg-muted text-[10px] font-semibold text-muted-foreground"
+                        className="flex size-10 items-center justify-center overflow-hidden rounded-md border bg-muted text-[10px] font-semibold text-muted-foreground"
                       >
-                        {p.title.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                        {p.image ? (
+                          <img src={imageUrl(p.image)} alt="" className="size-full object-cover" />
+                        ) : (
+                          p.title.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()
+                        )}
                       </button>
                     </TableCell>
                     <TableCell>

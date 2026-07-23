@@ -87,7 +87,7 @@ export interface ApiProduct {
   variants: ApiProductVariant[];
 }
 
-// Shape the editor sends on save (POST/PATCH). Images deferred until R2.
+// Shape the editor sends on save (POST/PATCH).
 export interface ProductWriteBody {
   title: string;
   description: string | null;
@@ -100,8 +100,13 @@ export interface ProductWriteBody {
   lowStockThreshold: number;
   categoryIds: string[];
   tags: string[];
-  images: ApiProductImage[];
-  options: { attributeId: string; valueIds: string[] }[];
+  images: ApiProductImage[]; // product media library / gallery
+  options: {
+    attributeId: string;
+    valueIds: string[];
+    // Per-value image sets, keyed by attributeValueId (e.g. Color "Red" → photos).
+    valueImages?: Record<string, ApiProductImage[]>;
+  }[];
   variants: {
     optionValueIds: string[];
     sku: string | null;

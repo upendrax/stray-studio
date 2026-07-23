@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, Bold, Italic, Link2, List, Plus, X, ImagePlus, Camera, ChevronRight, Search } from "lucide-react";
+import { ArrowLeft, Bold, Italic, Link2, List, Loader2, Plus, X, ImagePlus, Camera, ChevronRight, Search } from "lucide-react";
 import { useStore } from "@/state/store-context";
-import { ApiError } from "@/lib/api";
+import { ApiError, api, imageUrl } from "@/lib/api";
 import {
   cartesian,
   type AttributeDef,
@@ -64,13 +64,11 @@ interface EditorVariant {
   available: boolean;
 }
 
-// Which of the product's gallery images is assigned to each option value
-// (Shopify-style: upload once to the product, then assign per group/variant).
-// Keyed by the variant key for per-variant overrides, or the group value.
+// Which library image (r2Key) is assigned to each option value (Shopify-style:
+// upload once to the product, then assign per group value). Keyed by the group
+// value string; per-variant keys ("Red / M") are session-only (the API stores
+// images per option value, not per variant combination).
 type ImageAssignments = Record<string, string>;
-
-// Mock product media library (placeholder thumbnails).
-const GALLERY = ["front.jpg", "back.jpg", "detail.jpg", "lifestyle.jpg"];
 
 interface VariantGroup {
   value: string;
@@ -132,6 +130,7 @@ interface EditorState {
   tags: string[];
   tagInput: string;
   images: ImageAssignments;
+  library: string[]; // r2Keys uploaded to this product (upload once, assign)
   optionsTouched: boolean;
 }
 
@@ -199,6 +198,24 @@ function fromApiProduct(
 
   const simple = !p.hasOptions ? p.variants[0] : undefined;
 
+  // Per-value image assignments (group value string -> first r2Key) + the
+  // product's media library (gallery images ∪ every assigned per-value image).
+  const images: ImageAssignments = {};
+  for (const o of p.options) {
+    for (const ov of o.values) {
+      const first = ov.images[0];
+      if (!first) continue;
+      const vstr = strOf(o.attributeId, ov.attributeValueId);
+      if (vstr) images[vstr] = first.r2Key;
+    }
+  }
+  const library = Array.from(
+    new Set([
+      ...p.images.map((i) => i.r2Key),
+      ...p.options.flatMap((o) => o.values.flatMap((ov) => ov.images.map((i) => i.r2Key))),
+    ]),
+  );
+
   return {
     id: p.id,
     title: p.title,
@@ -220,7 +237,8 @@ function fromApiProduct(
       .filter((x): x is string => !!x),
     tags: [...p.tags],
     tagInput: "",
-    images: {}, // per-value/gallery images deferred until R2 upload lands
+    images,
+    library,
     optionsTouched: false,
   };
 }
@@ -241,12 +259,22 @@ function toApiBody(
     attributes.find((a) => a.id === attrId)?.values.find((v) => v.value === str)?.id;
 
   const activeOptions = ed.options.filter((o) => o.values.length);
-  const options = activeOptions.map((o) => ({
-    attributeId: o.attrId,
-    valueIds: o.values
-      .map((v) => valueId(o.attrId, v))
-      .filter((x): x is string => !!x),
-  }));
+  const options = activeOptions.map((o) => {
+    // Attach the per-value image (if assigned) to that value's attributeValueId.
+    const valueImages: Record<string, { r2Key: string; alt: string | null }[]> = {};
+    for (const v of o.values) {
+      const vid = valueId(o.attrId, v);
+      const key = ed.images[v];
+      if (vid && key) valueImages[vid] = [{ r2Key: key, alt: null }];
+    }
+    return {
+      attributeId: o.attrId,
+      valueIds: o.values
+        .map((v) => valueId(o.attrId, v))
+        .filter((x): x is string => !!x),
+      valueImages: Object.keys(valueImages).length ? valueImages : undefined,
+    };
+  });
 
   const variants = ed.hasOptions
     ? ed.variants.map((v) => {
@@ -279,7 +307,7 @@ function toApiBody(
       .map((p) => catIdByPath.get(p))
       .filter((x): x is string => !!x),
     tags: ed.tags,
-    images: [],
+    images: ed.library.map((r2Key) => ({ r2Key, alt: null })),
     options,
     variants,
     ...(ed.hasOptions ? {} : { quantity: Number(ed.qty) || 0, sku: ed.sku || null }),
@@ -291,7 +319,7 @@ function blank(): EditorState {
     id: null, title: "", description: "", status: "Draft",
     hasOptions: false, price: "", compareAt: "", chargeTax: false, costPerItem: "", sku: "", trackInv: true,
     qty: "0", lowAt: "5", options: [], variants: [],
-    cats: [], tags: [], tagInput: "", images: {}, optionsTouched: false,
+    cats: [], tags: [], tagInput: "", images: {}, library: [], optionsTouched: false,
   };
 }
 
@@ -336,6 +364,8 @@ export default function ProductEditor() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   // The image-assignment key currently being picked for ("" = closed).
   const [imgFor, setImgFor] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const imgInput = useRef<HTMLInputElement>(null);
   const [catSearch, setCatSearch] = useState("");
 
   // Fetch the full product for editing once the attribute + category context
@@ -512,6 +542,29 @@ export default function ProductEditor() {
       return { ...s, images };
     });
     setDirty(true);
+  };
+
+  // Upload a new photo into the product's library and assign it to the slot
+  // currently being picked for.
+  const uploadImage = async (file: File | undefined) => {
+    if (!file || imgFor === null) return;
+    const slot = imgFor;
+    setUploading(true);
+    try {
+      const { r2Key } = await api.upload(file);
+      setEdState((s) => ({
+        ...s,
+        library: s.library.includes(r2Key) ? s.library : [...s.library, r2Key],
+        images: { ...s.images, [slot]: r2Key },
+      }));
+      setDirty(true);
+      setImgFor(null);
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't upload image");
+    } finally {
+      setUploading(false);
+      if (imgInput.current) imgInput.current.value = "";
+    }
   };
 
   const save = async () => {
@@ -832,22 +885,18 @@ export default function ProductEditor() {
                     return (
                       <button
                         onClick={() => setImgFor(key)}
-                        title={img ? `${img} — change` : "Assign image"}
+                        title={img ? "Change image" : "Assign image"}
                         className={cn(
                           "flex shrink-0 items-center justify-center overflow-hidden rounded-md border",
                           size,
                           img ? "" : "border-dashed text-muted-foreground hover:border-ring",
                         )}
-                        style={
-                          img
-                            ? {
-                                background:
-                                  "repeating-linear-gradient(45deg, var(--muted), var(--muted) 5px, var(--background) 5px, var(--background) 10px)",
-                              }
-                            : undefined
-                        }
                       >
-                        {!img && <ImagePlus className="size-3.5" />}
+                        {img ? (
+                          <img src={imageUrl(img)} alt="" className="size-full object-cover" />
+                        ) : (
+                          <ImagePlus className="size-3.5" />
+                        )}
                       </button>
                     );
                   };
@@ -1249,34 +1298,50 @@ export default function ProductEditor() {
               Pick from this product's photos, or upload more.
             </DialogDescription>
           </DialogHeader>
+          <input
+            ref={imgInput}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => uploadImage(e.target.files?.[0])}
+          />
           <div className="grid grid-cols-4 gap-2">
-            <button className="flex aspect-square flex-col items-center justify-center gap-1 rounded-md border-[1.5px] border-dashed text-muted-foreground hover:border-ring">
-              <ImagePlus className="size-4" />
-              <span className="text-[10px]">Upload</span>
+            <button
+              onClick={() => imgInput.current?.click()}
+              disabled={uploading}
+              className="flex aspect-square flex-col items-center justify-center gap-1 rounded-md border-[1.5px] border-dashed text-muted-foreground hover:border-ring"
+            >
+              {uploading ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <ImagePlus className="size-4" />
+              )}
+              <span className="text-[10px]">{uploading ? "Uploading…" : "Upload"}</span>
             </button>
-            {GALLERY.map((img) => {
-              const active = imgFor && ed.images[imgFor] === img;
+            {ed.library.map((key) => {
+              const active = imgFor && ed.images[imgFor] === key;
               return (
                 <button
-                  key={img}
+                  key={key}
                   onClick={() => {
-                    if (imgFor) assignImage(imgFor, active ? null : img);
+                    if (imgFor) assignImage(imgFor, active ? null : key);
                     setImgFor(null);
                   }}
                   className={cn(
-                    "flex aspect-square items-center justify-center rounded-md border text-center font-mono text-[8px] text-muted-foreground",
+                    "aspect-square overflow-hidden rounded-md border",
                     active && "ring-2 ring-ring",
                   )}
-                  style={{
-                    background:
-                      "repeating-linear-gradient(45deg, var(--muted), var(--muted) 6px, var(--background) 6px, var(--background) 12px)",
-                  }}
                 >
-                  {img}
+                  <img src={imageUrl(key)} alt="" className="size-full object-cover" />
                 </button>
               );
             })}
           </div>
+          {ed.library.length === 0 && !uploading && (
+            <div className="py-2 text-center text-xs text-muted-foreground">
+              No photos yet — upload one to get started.
+            </div>
+          )}
           <DialogFooter>
             <Button
               variant="outline"
