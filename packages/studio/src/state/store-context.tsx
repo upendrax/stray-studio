@@ -20,6 +20,8 @@ import {
   type Order,
   type Product,
   type ProductSummary,
+  type ApiProduct,
+  type ProductWriteBody,
   type StoreSettings,
 } from "@/lib/mock-data";
 import { api } from "@/lib/api";
@@ -155,6 +157,10 @@ interface StoreState {
     ids: string[],
     opts?: { status?: "Active" | "Draft"; categoryId?: string },
   ) => Promise<void>;
+  // Full product read/write for the editor (list summaries refresh on write).
+  getProduct: (id: string) => Promise<ApiProduct>;
+  saveProduct: (body: ProductWriteBody, id?: string) => Promise<ApiProduct>;
+  deleteProduct: (id: string) => Promise<void>;
   upsertDiscount: (rec: Discount) => void;
   deleteDiscounts: (ids: string[]) => void;
   // Persist (create if new, else update) and return the saved record — callers
@@ -303,6 +309,30 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         status: opts?.status ? opts.status.toLowerCase() : undefined,
         categoryId: opts?.categoryId,
       });
+      await reloadProducts();
+    },
+    [reloadProducts],
+  );
+
+  const getProduct = useCallback<StoreState["getProduct"]>(async (id) => {
+    const res = await api.get<{ product: ApiProduct }>(`/api/admin/products/${id}`);
+    return res.product;
+  }, []);
+
+  const saveProduct = useCallback<StoreState["saveProduct"]>(
+    async (body, id) => {
+      const res = id
+        ? await api.patch<{ product: ApiProduct }>(`/api/admin/products/${id}`, body)
+        : await api.post<{ product: ApiProduct }>("/api/admin/products", body);
+      await reloadProducts();
+      return res.product;
+    },
+    [reloadProducts],
+  );
+
+  const deleteProduct = useCallback<StoreState["deleteProduct"]>(
+    async (id) => {
+      await api.del(`/api/admin/products/${id}`);
       await reloadProducts();
     },
     [reloadProducts],
@@ -464,6 +494,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       mutateOrder,
       updateProducts,
       bulkProducts,
+      getProduct,
+      saveProduct,
+      deleteProduct,
       upsertDiscount,
       deleteDiscounts,
       upsertAttribute,
@@ -478,7 +511,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }),
     [
       orders, products, productSummaries, productsLoading, discounts, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
-      mutateOrder, updateProducts, bulkProducts, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
+      mutateOrder, updateProducts, bulkProducts, getProduct, saveProduct, deleteProduct, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
       upsertCategory, addProductsToCategory, deleteCategory, patchSettings, saveSettings,
       discardSettings, anonymizeCustomer,
     ],

@@ -75,6 +75,81 @@ export function summaryStock(p: ProductSummary): StockLevel {
   return "ok";
 }
 
+// Full product graph as GET /api/admin/products/:id returns it. Options and
+// variants are keyed by global attribute/attribute-value ids; the editor maps
+// these to/from the value strings it works in. Money is integer cents.
+export interface ApiProductImage {
+  r2Key: string;
+  alt: string | null;
+}
+export interface ApiProductOptionValue {
+  id: string;
+  attributeValueId: string;
+  position: number;
+  images: ApiProductImage[];
+}
+export interface ApiProductOption {
+  id: string;
+  attributeId: string;
+  position: number;
+  values: ApiProductOptionValue[];
+}
+export interface ApiProductVariant {
+  id: string;
+  sku: string | null;
+  price: number | null; // cents; null = inherit basePrice
+  quantity: number;
+  available: boolean;
+  position: number;
+  archived: boolean;
+  attributeValueIds: string[];
+}
+export interface ApiProduct {
+  id: string;
+  title: string;
+  slug: string;
+  description: string | null;
+  status: "active" | "draft";
+  hasOptions: boolean;
+  basePrice: number; // cents
+  compareAtPrice: number | null; // cents
+  chargeTax: boolean;
+  costPerItem: number | null; // cents
+  trackInventory: boolean;
+  lowStockThreshold: number;
+  categoryIds: string[];
+  tags: string[];
+  images: ApiProductImage[];
+  options: ApiProductOption[];
+  variants: ApiProductVariant[];
+}
+
+// Shape the editor sends on save (POST/PATCH). Images deferred until R2.
+export interface ProductWriteBody {
+  title: string;
+  description: string | null;
+  status: "active" | "draft";
+  basePrice: number;
+  compareAtPrice: number | null;
+  chargeTax: boolean;
+  costPerItem: number | null;
+  trackInventory: boolean;
+  lowStockThreshold: number;
+  categoryIds: string[];
+  tags: string[];
+  images: ApiProductImage[];
+  options: { attributeId: string; valueIds: string[] }[];
+  variants: {
+    optionValueIds: string[];
+    sku: string | null;
+    price: number | null;
+    quantity: number;
+    available: boolean;
+  }[];
+  quantity?: number;
+  sku?: string | null;
+}
+
 export interface OrderLine {
   name: string;
   variant: string;

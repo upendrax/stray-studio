@@ -1,10 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, Bold, Italic, Link2, List, Plus, X, ImagePlus, Camera, ChevronRight, Search } from "lucide-react";
 import { useStore } from "@/state/store-context";
 import { ApiError } from "@/lib/api";
-import { cartesian, type AttributeDef, type Product } from "@/lib/mock-data";
+import {
+  cartesian,
+  type AttributeDef,
+  type ApiProduct,
+  type Category,
+  type ProductWriteBody,
+} from "@/lib/mock-data";
 import { AttributeDialog } from "@/components/attribute-dialog";
 import {
   DropdownMenu,
@@ -136,43 +142,147 @@ function colorMap(attr: AttributeDef): Record<string, string> | undefined {
   );
 }
 
-function fromProduct(p: Product, attributes: AttributeDef[]): EditorState {
+// API money is integer cents; the editor works in whole rupees.
+const toRs = (cents: number) => cents / 100;
+const toCents = (rs: string) => Math.round((Number(rs) || 0) * 100);
+
+// Map the full API product graph into editor state. Value ids resolve to the
+// value strings the editor works in via the (real) attribute definitions;
+// category ids resolve to Studio paths.
+function fromApiProduct(
+  p: ApiProduct,
+  attributes: AttributeDef[],
+  categories: Category[],
+): EditorState {
+  const basePriceRs = toRs(p.basePrice);
+  const catPathById = new Map(
+    categories.filter((c) => c.id).map((c) => [c.id!, c.path]),
+  );
+  const strOf = (attrId: string, valueId: string) =>
+    attributes.find((a) => a.id === attrId)?.values.find((v) => v.id === valueId)?.value;
+
+  const options: EditorOption[] = p.options.map((o) => {
+    const attr = attributes.find((a) => a.id === o.attributeId);
+    return {
+      attrId: o.attributeId,
+      name: attr?.name ?? o.attributeId,
+      useImages: attr?.useImages ?? false,
+      allValues: attr
+        ? attr.values.map((v) => v.value)
+        : o.values.map((v) => strOf(o.attributeId, v.attributeValueId) ?? v.attributeValueId),
+      values: o.values.map(
+        (v) => strOf(o.attributeId, v.attributeValueId) ?? v.attributeValueId,
+      ),
+      colors: attr ? colorMap(attr) : undefined,
+    };
+  });
+
+  const variants: EditorVariant[] = p.hasOptions
+    ? p.variants.map((v) => {
+        // Order this variant's value strings by option order to rebuild the key.
+        const key = p.options
+          .map((o) => {
+            const optValueIds = new Set(o.values.map((ov) => ov.attributeValueId));
+            const avid = v.attributeValueIds.find((id) => optValueIds.has(id));
+            return (avid && strOf(o.attributeId, avid)) || "";
+          })
+          .join(" / ");
+        return {
+          key,
+          price: String(v.price != null ? toRs(v.price) : basePriceRs),
+          sku: v.sku ?? "",
+          qty: String(v.quantity),
+          available: v.available,
+        };
+      })
+    : [];
+
+  const simple = !p.hasOptions ? p.variants[0] : undefined;
+
   return {
     id: p.id,
-    title: p.name,
-    description: "",
-    status: p.status,
-    hasOptions: p.type === "variable",
-    price:
-      p.price != null
-        ? String(p.price)
-        : p.basePrice != null
-          ? String(p.basePrice)
-          : "2500",
-    compareAt: p.compareAt ? String(p.compareAt) : "",
-    chargeTax: p.chargeTax ?? false,
-    costPerItem: p.costPerItem ? String(p.costPerItem) : "",
-    sku: p.sku ?? "",
-    trackInv: p.trackInv !== false,
-    qty: p.qty != null ? String(p.qty) : "0",
-    lowAt: String(p.lowAt ?? 5),
-    options: (p.options ?? []).map((o) => {
-      const attr = attributes.find((a) => a.name === o.name);
-      return {
-        attrId: attr?.id ?? o.name,
-        name: o.name,
-        useImages: o.useImages,
-        allValues: attr ? attr.values.map((v) => v.value) : [...o.values],
-        values: [...o.values],
-        colors: attr ? colorMap(attr) : undefined,
-      };
-    }),
-    variants: (p.variants ?? []).map((v) => ({ key: v.key, price: String(v.price), sku: v.sku, qty: String(v.qty), available: v.available })),
-    cats: [...p.cats],
+    title: p.title,
+    description: p.description ?? "",
+    status: p.status === "active" ? "Active" : "Draft",
+    hasOptions: p.hasOptions,
+    price: String(basePriceRs),
+    compareAt: p.compareAtPrice != null ? String(toRs(p.compareAtPrice)) : "",
+    chargeTax: p.chargeTax,
+    costPerItem: p.costPerItem != null ? String(toRs(p.costPerItem)) : "",
+    sku: simple?.sku ?? "",
+    trackInv: p.trackInventory,
+    qty: String(simple?.quantity ?? 0),
+    lowAt: String(p.lowStockThreshold),
+    options,
+    variants,
+    cats: p.categoryIds
+      .map((id) => catPathById.get(id))
+      .filter((x): x is string => !!x),
     tags: [...p.tags],
     tagInput: "",
-    images: {},
+    images: {}, // per-value/gallery images deferred until R2 upload lands
     optionsTouched: false,
+  };
+}
+
+// Build the API write body from editor state: option/value strings resolve to
+// global ids, variant keys to ordered optionValueIds, category paths to ids.
+// Images are omitted (deferred). Variant prices at the base send null (inherit).
+function toApiBody(
+  ed: EditorState,
+  attributes: AttributeDef[],
+  categories: Category[],
+): ProductWriteBody {
+  const basePrice = toCents(ed.price);
+  const catIdByPath = new Map(
+    categories.filter((c) => c.id).map((c) => [c.path, c.id!]),
+  );
+  const valueId = (attrId: string, str: string) =>
+    attributes.find((a) => a.id === attrId)?.values.find((v) => v.value === str)?.id;
+
+  const activeOptions = ed.options.filter((o) => o.values.length);
+  const options = activeOptions.map((o) => ({
+    attributeId: o.attrId,
+    valueIds: o.values
+      .map((v) => valueId(o.attrId, v))
+      .filter((x): x is string => !!x),
+  }));
+
+  const variants = ed.hasOptions
+    ? ed.variants.map((v) => {
+        const parts = v.key.split(" / ");
+        const optionValueIds = activeOptions
+          .map((o, i) => valueId(o.attrId, parts[i] ?? ""))
+          .filter((x): x is string => !!x);
+        const cents = toCents(v.price);
+        return {
+          optionValueIds,
+          sku: v.sku || null,
+          price: cents === basePrice ? null : cents, // base -> inherit
+          quantity: Number(v.qty) || 0,
+          available: v.available,
+        };
+      })
+    : [];
+
+  return {
+    title: ed.title.trim(),
+    description: ed.description.trim() || null,
+    status: ed.status === "Active" ? "active" : "draft",
+    basePrice,
+    compareAtPrice: ed.compareAt ? toCents(ed.compareAt) : null,
+    chargeTax: ed.chargeTax,
+    costPerItem: ed.costPerItem ? toCents(ed.costPerItem) : null,
+    trackInventory: ed.trackInv,
+    lowStockThreshold: Number(ed.lowAt) || 5,
+    categoryIds: ed.cats
+      .map((p) => catIdByPath.get(p))
+      .filter((x): x is string => !!x),
+    tags: ed.tags,
+    images: [],
+    options,
+    variants,
+    ...(ed.hasOptions ? {} : { quantity: Number(ed.qty) || 0, sku: ed.sku || null }),
   };
 }
 
@@ -205,16 +315,21 @@ function regenVariants(e: EditorState): EditorVariant[] {
 export default function ProductEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { products, updateProducts, attributes, upsertAttribute, categories } =
-    useStore();
+  const {
+    attributes,
+    attributesLoading,
+    categories,
+    categoriesLoading,
+    upsertAttribute,
+    getProduct,
+    saveProduct,
+    deleteProduct: deleteProductApi,
+  } = useStore();
 
-  const source = id ? products.find((p) => p.id === id) : null;
-  const initial = useMemo(
-    () => (source ? fromProduct(source, attributes) : blank()),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [id],
-  );
-  const [ed, setEdState] = useState<EditorState>(initial);
+  const [ed, setEdState] = useState<EditorState>(blank);
+  const [loading, setLoading] = useState(!!id);
+  const [notFound, setNotFound] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [dialog, setDialog] = useState<"discard" | "delete" | null>(null);
   const [attrDialogOpen, setAttrDialogOpen] = useState(false);
@@ -222,6 +337,32 @@ export default function ProductEditor() {
   // The image-assignment key currently being picked for ("" = closed).
   const [imgFor, setImgFor] = useState<string | null>(null);
   const [catSearch, setCatSearch] = useState("");
+
+  // Fetch the full product for editing once the attribute + category context
+  // is available (value ids / category ids only resolve to labels with them).
+  useEffect(() => {
+    if (!id) {
+      setLoading(false);
+      return;
+    }
+    if (attributesLoading || categoriesLoading) return;
+    let alive = true;
+    setLoading(true);
+    getProduct(id)
+      .then((p) => {
+        if (alive) setEdState(fromApiProduct(p, attributes, categories));
+      })
+      .catch(() => {
+        if (alive) setNotFound(true);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, attributesLoading, categoriesLoading]);
 
   // Category picker rows: flat filtered list when searching, else indented tree.
   const catRows = (() => {
@@ -256,10 +397,18 @@ export default function ProductEditor() {
     (a) => !ed.options.some((o) => o.attrId === a.id),
   );
 
-  if (id && !source) {
+  if (notFound) {
     return (
       <Card className="px-6 py-12 text-center text-muted-foreground shadow-sm">
         Product not found.
+      </Card>
+    );
+  }
+
+  if (loading) {
+    return (
+      <Card className="flex items-center justify-center px-6 py-16 text-muted-foreground shadow-sm">
+        <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
       </Card>
     );
   }
@@ -365,58 +514,31 @@ export default function ProductEditor() {
     setDirty(true);
   };
 
-  const save = () => {
-    if (!ed.title.trim()) return;
-    const rec: Product = {
-      id: ed.id ?? `p${Math.random().toString(36).slice(2, 6)}`,
-      name: ed.title.trim(),
-      status: ed.status,
-      type: ed.hasOptions ? "variable" : "simple",
-      updatedMin: 0,
-      cats: ed.cats,
-      tags: ed.tags,
-      ...(ed.hasOptions
-        ? {
-            basePrice: Number(ed.price) || 0,
-            options: ed.options
-              .filter((o) => o.values.length)
-              .map((o) => ({
-                name: o.name,
-                values: o.values,
-                useImages: o.useImages,
-              })),
-            variants: ed.variants.map((v) => ({
-              key: v.key,
-              price: Number(v.price) || 0,
-              sku: v.sku,
-              qty: Number(v.qty) || 0,
-              available: v.available,
-            })),
-          }
-        : {
-            price: Number(ed.price) || 0,
-            compareAt: ed.compareAt ? Number(ed.compareAt) : "",
-            chargeTax: ed.chargeTax,
-            costPerItem: ed.costPerItem ? Number(ed.costPerItem) : "",
-            sku: ed.sku,
-            trackInv: ed.trackInv,
-            qty: Number(ed.qty) || 0,
-            lowAt: Number(ed.lowAt) || 5,
-          }),
-    };
-    updateProducts((prev) => {
-      const exists = prev.some((p) => p.id === rec.id);
-      return exists ? prev.map((p) => (p.id === rec.id ? rec : p)) : [rec, ...prev];
-    });
-    setDirty(false);
-    toast("Product saved");
-    navigate("/products");
+  const save = async () => {
+    if (!ed.title.trim() || saving) return;
+    setSaving(true);
+    try {
+      await saveProduct(toApiBody(ed, attributes, categories), ed.id ?? undefined);
+      setDirty(false);
+      toast(ed.id ? "Product saved" : "Product created");
+      navigate("/products");
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't save product");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const deleteProduct = () => {
-    updateProducts((prev) => prev.filter((p) => p.id !== ed.id));
-    toast("Product deleted");
-    navigate("/products");
+  const deleteProduct = async () => {
+    if (!ed.id) return;
+    try {
+      await deleteProductApi(ed.id);
+      toast("Product deleted");
+      navigate("/products");
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't delete product");
+      setDialog(null);
+    }
   };
 
   return (
@@ -1043,8 +1165,8 @@ export default function ProductEditor() {
               <Button variant="outline" size="sm" onClick={() => setDialog("discard")}>
                 Discard
               </Button>
-              <Button size="sm" onClick={save} disabled={!ed.title.trim()}>
-                Save
+              <Button size="sm" onClick={save} disabled={!ed.title.trim() || saving}>
+                {saving ? "Saving…" : "Save"}
               </Button>
             </div>
           </div>
