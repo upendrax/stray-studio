@@ -19,6 +19,20 @@ app.use("/api/*", (c, next) =>
 
 app.get("/api/health", (c) => c.json({ ok: true, service: "stray-core" }));
 
+// Public image serving from R2 (product photos, category covers). Keys are
+// opaque + unguessable, so reads are public — the storefront needs them too.
+app.get("/api/images/*", async (c) => {
+  const key = c.req.path.slice("/api/images/".length);
+  if (!key) return c.json({ error: "Not found" }, 404);
+  const obj = await c.env.IMAGES.get(key);
+  if (!obj) return c.json({ error: "Not found" }, 404);
+  const headers = new Headers();
+  headers.set("Content-Type", obj.httpMetadata?.contentType ?? "application/octet-stream");
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  headers.set("ETag", obj.httpEtag);
+  return new Response(obj.body, { headers });
+});
+
 // Better Auth owns /api/auth/* (sign-in, OTP, sessions, sign-out…).
 app.on(["GET", "POST"], "/api/auth/*", (c) =>
   createAuth(c.env).handler(c.req.raw),

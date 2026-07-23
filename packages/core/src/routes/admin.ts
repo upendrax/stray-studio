@@ -6,6 +6,7 @@ import { productRoutes } from "./products";
 import { discountRoutes } from "./discounts";
 import { orderRoutes } from "./orders";
 import { customerRoutes } from "./customers";
+import { uploadRoutes } from "./uploads";
 import { settingsRoutes } from "./settings";
 import type { AppEnv } from "../lib/context";
 
@@ -24,6 +25,7 @@ admin.route("/products", productRoutes);
 admin.route("/discounts", discountRoutes);
 admin.route("/orders", orderRoutes);
 admin.route("/customers", customerRoutes);
+admin.route("/uploads", uploadRoutes);
 admin.route("/settings", settingsRoutes);
 
 export { admin as adminRoutes };
