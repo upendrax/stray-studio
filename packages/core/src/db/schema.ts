@@ -400,6 +400,8 @@ export const orders = sqliteTable(
     // Fulfillment
     courierName: text("courier_name"),
     trackingNumber: text("tracking_number"),
+    // Owner-only private note (right-rail Notes card; never customer-visible).
+    note: text("note"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

@@ -4,6 +4,7 @@ import { categoryRoutes } from "./categories";
 import { attributeRoutes } from "./attributes";
 import { productRoutes } from "./products";
 import { discountRoutes } from "./discounts";
+import { orderRoutes } from "./orders";
 import { settingsRoutes } from "./settings";
 import type { AppEnv } from "../lib/context";
 
@@ -20,6 +21,7 @@ admin.route("/categories", categoryRoutes);
 admin.route("/attributes", attributeRoutes);
 admin.route("/products", productRoutes);
 admin.route("/discounts", discountRoutes);
+admin.route("/orders", orderRoutes);
 admin.route("/settings", settingsRoutes);
 
 export { admin as adminRoutes };
