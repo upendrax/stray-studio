@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, Search } from "lucide-react";
 import { useStore } from "@/state/store-context";
+import { ApiError } from "@/lib/api";
 import { discountStatus, makeDiscount, type Discount } from "@/lib/mock-data";
 import { moneyShort } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -38,26 +39,52 @@ const STATUS_BADGE: Record<string, string> = {
 export default function DiscountEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { discounts, categories, products, upsertDiscount, deleteDiscounts } =
-    useStore();
+  const {
+    discounts,
+    discountsLoading,
+    categories,
+    productSummaries,
+    upsertDiscount,
+    deleteDiscounts,
+  } = useStore();
 
-  const source = id ? discounts.find((x) => x.id === id) : null;
-  const initial = useMemo(
-    () => (source ? { ...source } : makeDiscount()),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [id],
-  );
-  const [d, setD] = useState<Discount>(initial);
+  const [d, setD] = useState<Discount>(makeDiscount);
+  const [loading, setLoading] = useState(!!id);
+  const [notFound, setNotFound] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [catSearch, setCatSearch] = useState("");
   const [prodSearch, setProdSearch] = useState("");
 
-  if (id && !source) {
+  // Populate from the store collection once it has loaded (so a hard reload
+  // straight to /discounts/edit/:id doesn't briefly read an empty list).
+  useEffect(() => {
+    if (!id) {
+      setLoading(false);
+      return;
+    }
+    if (discountsLoading) return;
+    const src = discounts.find((x) => x.id === id);
+    if (src) setD({ ...src });
+    else setNotFound(true);
+    setLoading(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, discountsLoading]);
+
+  if (notFound) {
     return (
       <Card className="px-6 py-12 text-center text-muted-foreground shadow-sm">
         Discount not found.
+      </Card>
+    );
+  }
+
+  if (loading) {
+    return (
+      <Card className="flex items-center justify-center px-6 py-16 text-muted-foreground shadow-sm">
+        <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
       </Card>
     );
   }
@@ -85,23 +112,35 @@ export default function DiscountEditor() {
 
   const canScope = d.type !== "ship"; // free shipping is always order-level
 
-  const save = () => {
-    if (invalid) return;
-    upsertDiscount({
-      ...d,
-      code: d.code.trim(),
-      id: d.id || `d${Math.random().toString(36).slice(2, 6)}`,
-      applies: canScope ? d.applies : "order",
-    });
-    setDirty(false);
-    toast(id ? "Discount saved" : "Discount created");
-    navigate("/discounts");
+  const save = async () => {
+    if (invalid || saving) return;
+    setSaving(true);
+    try {
+      await upsertDiscount({
+        ...d,
+        code: d.code.trim(),
+        id: d.id || `d${Math.random().toString(36).slice(2, 6)}`,
+        applies: canScope ? d.applies : "order",
+      });
+      setDirty(false);
+      toast(id ? "Discount saved" : "Discount created");
+      navigate("/discounts");
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't save discount");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const remove = () => {
-    if (id) deleteDiscounts([id]);
-    toast("Discount deleted");
-    navigate("/discounts");
+  const remove = async () => {
+    try {
+      if (id) await deleteDiscounts([id]);
+      toast("Discount deleted");
+      navigate("/discounts");
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : "Couldn't delete discount");
+      setConfirmDelete(false);
+    }
   };
 
   const back = () => (dirty ? setConfirmDiscard(true) : navigate("/discounts"));
@@ -131,8 +170,8 @@ export default function DiscountEditor() {
     categories.filter((c) => !c.path.includes(" > ")).forEach((c) => walk(c.path));
     return rows;
   })();
-  const prodRows = products.filter(
-    (p) => !prodSearch.trim() || p.name.toLowerCase().includes(prodSearch.trim().toLowerCase()),
+  const prodRows = productSummaries.filter(
+    (p) => !prodSearch.trim() || p.title.toLowerCase().includes(prodSearch.trim().toLowerCase()),
   );
 
   const toggleCat = (path: string) =>
@@ -324,7 +363,7 @@ export default function DiscountEditor() {
                           checked={d.appliesProducts.includes(p.id)}
                           onCheckedChange={() => toggleProd(p.id)}
                         />
-                        <span className="min-w-0 truncate text-[13px]">{p.name}</span>
+                        <span className="min-w-0 truncate text-[13px]">{p.title}</span>
                       </label>
                     ))}
                   </PickerBox>
@@ -486,8 +525,8 @@ export default function DiscountEditor() {
               <Button variant="outline" size="sm" onClick={() => setConfirmDiscard(true)}>
                 Discard
               </Button>
-              <Button size="sm" onClick={save} disabled={invalid}>
-                Save
+              <Button size="sm" onClick={save} disabled={invalid || saving}>
+                {saving ? "Saving…" : "Save"}
               </Button>
             </div>
           </div>

@@ -50,10 +50,11 @@ function endsLabel(iso: string): string {
 }
 
 export default function Discounts() {
-  const { discounts, upsertDiscount, deleteDiscounts } = useStore();
+  const { discounts, discountsLoading, upsertDiscount, deleteDiscounts } = useStore();
   const navigate = useNavigate();
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
 
   const q = search.trim().toLowerCase();
@@ -69,17 +70,31 @@ export default function Discounts() {
     toast("Code copied");
   };
 
-  const bulkSetEnabled = (enabled: boolean) => {
-    for (const d of discounts) if (selected[d.id]) upsertDiscount({ ...d, enabled });
-    toast(`${selectedIds.length} discount${selectedIds.length === 1 ? "" : "s"} ${enabled ? "enabled" : "disabled"}`);
-    setSelected({});
+  const bulkSetEnabled = async (enabled: boolean) => {
+    setBusy(true);
+    try {
+      for (const d of discounts) if (selected[d.id]) await upsertDiscount({ ...d, enabled });
+      toast(`${selectedIds.length} discount${selectedIds.length === 1 ? "" : "s"} ${enabled ? "enabled" : "disabled"}`);
+      setSelected({});
+    } catch {
+      toast("Something went wrong — please try again");
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const bulkDelete = () => {
-    deleteDiscounts(selectedIds);
-    toast("Discounts deleted");
-    setSelected({});
-    setConfirmDelete(false);
+  const bulkDelete = async () => {
+    setBusy(true);
+    try {
+      await deleteDiscounts(selectedIds);
+      toast("Discounts deleted");
+      setSelected({});
+      setConfirmDelete(false);
+    } catch {
+      toast("Couldn't delete — please try again");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -104,20 +119,24 @@ export default function Discounts() {
         {selectedIds.length > 0 && (
           <div className="ml-auto flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">{selectedIds.length} selected</span>
-            <Button variant="outline" size="sm" onClick={() => bulkSetEnabled(true)}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => bulkSetEnabled(true)}>
               Enable
             </Button>
-            <Button variant="outline" size="sm" onClick={() => bulkSetEnabled(false)}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => bulkSetEnabled(false)}>
               Disable
             </Button>
-            <Button variant="outline" size="sm" className="text-destructive" onClick={() => setConfirmDelete(true)}>
+            <Button variant="outline" size="sm" className="text-destructive" disabled={busy} onClick={() => setConfirmDelete(true)}>
               Delete
             </Button>
           </div>
         )}
       </div>
 
-      {rows.length > 0 ? (
+      {discountsLoading ? (
+        <Card className="flex items-center justify-center px-6 py-12 text-muted-foreground shadow-sm">
+          <div className="size-4 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+        </Card>
+      ) : rows.length > 0 ? (
         <Card className="gap-0 overflow-hidden py-0">
           <Table>
             <TableHeader>
@@ -207,11 +226,11 @@ export default function Discounts() {
             <DialogDescription>This can't be undone.</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)}>
+            <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button size="sm" variant="destructive" onClick={bulkDelete}>
-              Delete
+            <Button size="sm" variant="destructive" onClick={bulkDelete} disabled={busy}>
+              {busy ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

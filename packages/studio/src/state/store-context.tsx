@@ -9,7 +9,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  seedDiscounts,
   seedOrders,
   seedProducts,
   seedSettings,
@@ -135,12 +134,100 @@ function splitPath(path: string): { name: string; parentPath: string } {
     : { name: path.slice(i + 3), parentPath: path.slice(0, i) };
 }
 
+// Discounts: the Studio splits value into pct/amt strings and dates into ISO
+// day strings; the API uses one integer `value` (percent or cents) and unix ms.
+interface ApiDiscount {
+  id: string;
+  code: string;
+  type: "percent" | "fixed" | "free_shipping";
+  value: number;
+  applies: "order" | "categories" | "products";
+  minType: "none" | "amount" | "quantity";
+  minOrderAmount: number | null;
+  minQuantity: number | null;
+  maxUses: number | null;
+  usedCount: number;
+  oncePerCustomer: boolean;
+  startsAt: number;
+  endsAt: number | null;
+  enabled: boolean;
+  categoryIds: string[];
+  productIds: string[];
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+// Local Y-M-D so a date round-trips without a timezone shift (SL is UTC+5:30).
+function msToDate(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+function dateToMs(s: string, endOfDay = false): number {
+  return new Date(`${s}T${endOfDay ? "23:59:59" : "00:00:00"}`).getTime();
+}
+
+function mapDiscount(a: ApiDiscount, idToPath: Map<string, string>): Discount {
+  return {
+    id: a.id,
+    code: a.code,
+    type: a.type === "percent" ? "pct" : a.type === "fixed" ? "amt" : "ship",
+    pct: a.type === "percent" ? String(a.value) : "",
+    amt: a.type === "fixed" ? String(a.value / 100) : "",
+    applies: a.applies,
+    appliesCategories: a.categoryIds
+      .map((id) => idToPath.get(id))
+      .filter((x): x is string => !!x),
+    appliesProducts: [...a.productIds],
+    minType: a.minType,
+    min:
+      a.minType === "amount" && a.minOrderAmount != null
+        ? String(a.minOrderAmount / 100)
+        : "",
+    minQty:
+      a.minType === "quantity" && a.minQuantity != null ? String(a.minQuantity) : "",
+    limit: a.maxUses != null ? String(a.maxUses) : "",
+    uses: a.usedCount,
+    onePer: a.oncePerCustomer,
+    start: msToDate(a.startsAt),
+    end: a.endsAt != null ? msToDate(a.endsAt) : "",
+    enabled: a.enabled,
+  };
+}
+
+function discountBody(d: Discount, pathToId: Map<string, string>) {
+  return {
+    code: d.code.trim(),
+    type: d.type === "pct" ? "percent" : d.type === "amt" ? "fixed" : "free_shipping",
+    value:
+      d.type === "pct"
+        ? Number(d.pct) || 0
+        : d.type === "amt"
+          ? Math.round((Number(d.amt) || 0) * 100)
+          : 0,
+    applies: d.applies,
+    categoryIds:
+      d.applies === "categories"
+        ? d.appliesCategories.map((p) => pathToId.get(p)).filter((x): x is string => !!x)
+        : [],
+    productIds: d.applies === "products" ? [...d.appliesProducts] : [],
+    minType: d.minType,
+    minOrderAmount:
+      d.minType === "amount" ? Math.round((Number(d.min) || 0) * 100) : null,
+    minQuantity: d.minType === "quantity" ? Number(d.minQty) || 0 : null,
+    maxUses: d.limit ? Number(d.limit) || null : null,
+    oncePerCustomer: d.onePer,
+    startsAt: d.start ? dateToMs(d.start) : Date.now(),
+    endsAt: d.end ? dateToMs(d.end, true) : null,
+    enabled: d.enabled,
+  };
+}
+
 interface StoreState {
   orders: Order[];
   products: Product[];
   productSummaries: ProductSummary[];
   productsLoading: boolean;
   discounts: Discount[];
+  discountsLoading: boolean;
   categories: Category[];
   attributes: AttributeDef[];
   attributesLoading: boolean;
@@ -161,8 +248,8 @@ interface StoreState {
   getProduct: (id: string) => Promise<ApiProduct>;
   saveProduct: (body: ProductWriteBody, id?: string) => Promise<ApiProduct>;
   deleteProduct: (id: string) => Promise<void>;
-  upsertDiscount: (rec: Discount) => void;
-  deleteDiscounts: (ids: string[]) => void;
+  upsertDiscount: (rec: Discount) => Promise<void>;
+  deleteDiscounts: (ids: string[]) => Promise<void>;
   // Persist (create if new, else update) and return the saved record — callers
   // need the server-assigned id (e.g. the product editor's inline "New attribute").
   upsertAttribute: (rec: AttributeDef) => Promise<AttributeDef>;
@@ -184,7 +271,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [products, setProducts] = useState<Product[]>(seedProducts);
   const [productSummaries, setProductSummaries] = useState<ProductSummary[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
-  const [discounts, setDiscounts] = useState<Discount[]>(seedDiscounts);
+  const [discounts, setDiscounts] = useState<Discount[]>([]);
+  const [discountsLoading, setDiscountsLoading] = useState(true);
+  const discountsRef = useRef<Discount[]>([]);
+  discountsRef.current = discounts;
   const [categories, setCategories] = useState<Category[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
   // path -> server id, rebuilt on every categories load; lets path-keyed
@@ -214,6 +304,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const reloadProducts = useCallback(async () => {
     const res = await api.get<{ products: ProductSummary[] }>("/api/admin/products");
     setProductSummaries(res.products);
+  }, []);
+
+  // Discounts. Category scopes carry ids on the wire; map them to Studio paths
+  // via the current category map (this runs after categories load).
+  const reloadDiscounts = useCallback(async () => {
+    const res = await api.get<{ discounts: ApiDiscount[] }>("/api/admin/discounts");
+    const idToPath = new Map(
+      Array.from(catPathToId.current, ([path, id]) => [id, path]),
+    );
+    setDiscounts(res.discounts.map((d) => mapDiscount(d, idToPath)));
   }, []);
 
   // Load API-backed data once the session is confirmed. Gating on `authed`
@@ -252,13 +352,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (alive) setAttributesLoading(false);
       });
 
-    // Categories: the id/parentId tree, derived into Studio paths.
+    // Categories, then discounts — discount category scopes resolve their ids
+    // to paths through the map categories builds, so load them in order.
     reloadCategories()
       .catch(() => {
         /* leave categories empty on failure */
       })
-      .finally(() => {
+      .then(() => {
         if (alive) setCategoriesLoading(false);
+        return reloadDiscounts();
+      })
+      .catch(() => {
+        /* leave discounts empty on failure */
+      })
+      .finally(() => {
+        if (alive) setDiscountsLoading(false);
       });
 
     // Products: list summaries.
@@ -273,7 +381,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [status, reloadCategories, reloadProducts]);
+  }, [status, reloadCategories, reloadProducts, reloadDiscounts]);
 
   const actorLabel = "by Rashmi (owner)";
 
@@ -338,17 +446,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [reloadProducts],
   );
 
-  const upsertDiscount = useCallback((rec: Discount) => {
-    setDiscounts((prev) =>
-      prev.some((d) => d.id === rec.id)
-        ? prev.map((d) => (d.id === rec.id ? rec : d))
-        : [...prev, rec],
-    );
-  }, []);
+  const upsertDiscount = useCallback<StoreState["upsertDiscount"]>(
+    async (rec) => {
+      // Update when the id already exists; else create (the caller's id is a
+      // client placeholder). Server codes/scopes are validated server-side.
+      const existing = discountsRef.current.some((d) => d.id === rec.id);
+      const body = discountBody(rec, catPathToId.current);
+      if (existing) {
+        await api.patch(`/api/admin/discounts/${rec.id}`, body);
+      } else {
+        await api.post("/api/admin/discounts", body);
+      }
+      await reloadDiscounts();
+    },
+    [reloadDiscounts],
+  );
 
-  const deleteDiscounts = useCallback((ids: string[]) => {
-    setDiscounts((prev) => prev.filter((d) => !ids.includes(d.id)));
-  }, []);
+  const deleteDiscounts = useCallback<StoreState["deleteDiscounts"]>(
+    async (ids) => {
+      await api.post("/api/admin/discounts/bulk-delete", { ids });
+      await reloadDiscounts();
+    },
+    [reloadDiscounts],
+  );
 
   const upsertAttribute = useCallback<StoreState["upsertAttribute"]>(async (rec) => {
     // Update when the id already exists in state; otherwise create (the caller's
@@ -483,6 +603,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       productSummaries,
       productsLoading,
       discounts,
+      discountsLoading,
       categories,
       categoriesLoading,
       attributes,
@@ -510,7 +631,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       anonymizeCustomer,
     }),
     [
-      orders, products, productSummaries, productsLoading, discounts, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
+      orders, products, productSummaries, productsLoading, discounts, discountsLoading, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
       mutateOrder, updateProducts, bulkProducts, getProduct, saveProduct, deleteProduct, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
       upsertCategory, addProductsToCategory, deleteCategory, patchSettings, saveSettings,
       discardSettings, anonymizeCustomer,
