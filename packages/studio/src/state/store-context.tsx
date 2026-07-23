@@ -10,14 +10,12 @@ import {
 } from "react";
 import {
   seedOrders,
-  seedProducts,
   seedSettings,
   type AttributeDef,
   type AttributeValue,
   type Category,
   type Discount,
   type Order,
-  type Product,
   type ProductSummary,
   type ApiProduct,
   type ProductWriteBody,
@@ -223,7 +221,6 @@ function discountBody(d: Discount, pathToId: Map<string, string>) {
 
 interface StoreState {
   orders: Order[];
-  products: Product[];
   productSummaries: ProductSummary[];
   productsLoading: boolean;
   discounts: Discount[];
@@ -237,7 +234,6 @@ interface StoreState {
   pendingCount: number;
   actorLabel: string;
   mutateOrder: (num: number, fn: (o: Order) => void, eventTitle?: string, opts?: { note?: boolean }) => void;
-  updateProducts: (fn: (products: Product[]) => Product[]) => void;
   // Real product-list actions (the summaries come from the API).
   bulkProducts: (
     action: "delete" | "status" | "addCategory",
@@ -256,7 +252,6 @@ interface StoreState {
   deleteAttribute: (id: string) => Promise<void>;
   upsertCategory: (cat: Category, originalPath?: string) => Promise<void>;
   deleteCategory: (path: string) => Promise<void>;
-  addProductsToCategory: (productIds: string[], path: string) => void;
   patchSettings: (patch: Partial<StoreSettings>) => void;
   saveSettings: () => Promise<void>;
   discardSettings: () => void;
@@ -268,7 +263,6 @@ const StoreContext = createContext<StoreState | null>(null);
 export function StoreProvider({ children }: { children: ReactNode }) {
   const { status } = useAuth();
   const [orders, setOrders] = useState<Order[]>(seedOrders);
-  const [products, setProducts] = useState<Product[]>(seedProducts);
   const [productSummaries, setProductSummaries] = useState<ProductSummary[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [discounts, setDiscounts] = useState<Discount[]>([]);
@@ -404,10 +398,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [actorLabel],
   );
 
-  const updateProducts = useCallback<StoreState["updateProducts"]>((fn) => {
-    setProducts((prev) => fn(prev));
-  }, []);
-
   const bulkProducts = useCallback<StoreState["bulkProducts"]>(
     async (action, ids, opts) => {
       await api.post("/api/admin/products/bulk", {
@@ -515,17 +505,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       } else {
         await api.post("/api/admin/categories", body);
       }
-      // Keep still-mock product assignments aligned when the path changes
-      // (rename or move) — the same prefix remap the server applies to the tree.
-      if (originalPath && originalPath !== cat.path) {
-        const remap = (c: string) =>
-          c === originalPath
-            ? cat.path
-            : c.startsWith(`${originalPath} > `)
-              ? cat.path + c.slice(originalPath.length)
-              : c;
-        setProducts((prev) => prev.map((p) => ({ ...p, cats: p.cats.map(remap) })));
-      }
       await reloadCategories();
     },
     [reloadCategories],
@@ -535,41 +514,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     async (path) => {
       const id = catPathToId.current.get(path);
       if (!id) return;
-      // Server moves children (and their product links) up to this node's
-      // parent — never a cascade. Mirror that on still-mock product cats.
+      // Server moves children up to this node's parent (never a cascade) and
+      // drops product links via the junction's onDelete cascade.
       await api.del(`/api/admin/categories/${id}`);
-      const parent = path.includes(" > ") ? path.slice(0, path.lastIndexOf(" > ")) : "";
-      const remap = (c: string): string | null =>
-        c === path
-          ? null
-          : c.startsWith(`${path} > `)
-            ? (parent ? `${parent} > ` : "") + c.slice(path.length + 3)
-            : c;
-      setProducts((prev) =>
-        prev.map((p) => ({
-          ...p,
-          cats: p.cats
-            .map(remap)
-            .filter((c, i, a): c is string => !!c && a.indexOf(c) === i),
-        })),
-      );
       await reloadCategories();
     },
     [reloadCategories],
-  );
-
-  const addProductsToCategory = useCallback(
-    (productIds: string[], path: string) => {
-      const ids = new Set(productIds);
-      setProducts((prev) =>
-        prev.map((p) =>
-          ids.has(p.id) && !p.cats.includes(path)
-            ? { ...p, cats: [...p.cats, path] }
-            : p,
-        ),
-      );
-    },
-    [],
   );
 
   const patchSettings = useCallback((patch: Partial<StoreSettings>) => {
@@ -599,7 +549,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const value = useMemo<StoreState>(
     () => ({
       orders,
-      products,
       productSummaries,
       productsLoading,
       discounts,
@@ -613,7 +562,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       pendingCount: orders.filter((o) => o.status === "Pending").length,
       actorLabel,
       mutateOrder,
-      updateProducts,
       bulkProducts,
       getProduct,
       saveProduct,
@@ -623,7 +571,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       upsertAttribute,
       deleteAttribute,
       upsertCategory,
-      addProductsToCategory,
       deleteCategory,
       patchSettings,
       saveSettings,
@@ -631,9 +578,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       anonymizeCustomer,
     }),
     [
-      orders, products, productSummaries, productsLoading, discounts, discountsLoading, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
-      mutateOrder, updateProducts, bulkProducts, getProduct, saveProduct, deleteProduct, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
-      upsertCategory, addProductsToCategory, deleteCategory, patchSettings, saveSettings,
+      orders, productSummaries, productsLoading, discounts, discountsLoading, categories, categoriesLoading, attributes, attributesLoading, settings, settingsSnap, actorLabel,
+      mutateOrder, bulkProducts, getProduct, saveProduct, deleteProduct, upsertDiscount, deleteDiscounts, upsertAttribute, deleteAttribute,
+      upsertCategory, deleteCategory, patchSettings, saveSettings,
       discardSettings, anonymizeCustomer,
     ],
   );

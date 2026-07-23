@@ -25,12 +25,12 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [days, setDays] = useState<7 | 30 | 90>(30);
 
-  const { orders, products, pendingCount } = useStore();
+  const { orders, productSummaries, pendingCount } = useStore();
   const todays = orders.filter((o) => o.min < 1440 && o.status !== "Cancelled");
   const todayRev = todays
     .filter((o) => o.status !== "Pending")
     .reduce((s, o) => s + o.total, 0);
-  const lowItems = useMemo(() => lowStockItems(products), [products]);
+  const lowItems = useMemo(() => lowStockItems(productSummaries), [productSummaries]);
 
   const chartData = useMemo(() => {
     const series = chartSeries(days);
@@ -59,11 +59,11 @@ export default function Dashboard() {
         go: () => navigate(`/orders/${o.num}`),
       })),
     ...lowItems.slice(0, 5).map((li) => ({
-      key: `low-${li.label}`,
+      key: `low-${li.id}`,
       title: li.label,
       detail: li.qty <= 0 ? "out of stock" : `${li.qty} left`,
       dot: (li.qty <= 0 ? "out" : "low") as "out" | "low",
-      go: () => navigate(`/products/${li.product.id}`),
+      go: () => navigate(`/products/${li.id}`),
     })),
   ];
 

@@ -12,43 +12,6 @@ export type OrderStatus =
 export type PaymentMethod = "payhere" | "bank";
 export type StockLevel = "ok" | "low" | "out";
 
-export interface ProductOption {
-  name: string;
-  values: string[];
-  useImages: boolean;
-}
-
-export interface Variant {
-  key: string; // "Red / M"
-  price: number;
-  sku: string;
-  qty: number;
-  available: boolean;
-}
-
-export interface Product {
-  id: string;
-  name: string;
-  status: "Active" | "Draft";
-  type: "variable" | "simple";
-  // variable
-  basePrice?: number;
-  options?: ProductOption[];
-  variants?: Variant[];
-  // simple
-  price?: number;
-  compareAt?: number | "";
-  chargeTax?: boolean;
-  costPerItem?: number | "";
-  sku?: string;
-  trackInv?: boolean;
-  qty?: number;
-  lowAt?: number;
-  updatedMin: number;
-  cats: string[];
-  tags: string[];
-}
-
 // Product list row as the API returns it (GET /api/admin/products). Money is
 // integer cents; the Studio renders rupees, so divide at the boundary.
 export interface ProductSummary {
@@ -196,38 +159,6 @@ export function cartesian<T>(lists: T[][]): T[][] {
   );
 }
 
-function mkVariants(opts: ProductOption[], qtys: number[], base: number): Variant[] {
-  return cartesian(opts.map((o) => o.values)).map((c, i) => ({
-    key: c.join(" / "),
-    price: base,
-    sku: "",
-    qty: qtys[i] ?? 24,
-    available: true,
-  }));
-}
-
-const p1opts: ProductOption[] = [
-  { name: "Color", values: ["Black", "White", "Red"], useImages: true },
-  { name: "Size", values: ["S", "M", "L", "XL"], useImages: false },
-];
-const p2opts: ProductOption[] = [
-  { name: "Color", values: ["Black", "White"], useImages: false },
-  { name: "Size", values: ["S", "M", "L"], useImages: false },
-];
-const p3opts: ProductOption[] = [
-  { name: "Color", values: ["Ecru", "Charcoal"], useImages: true },
-  { name: "Size", values: ["M", "L", "XL"], useImages: false },
-];
-
-export const seedProducts: Product[] = [
-  { id: "p1", name: "Oversized Tee", status: "Active", type: "variable", basePrice: 2800, options: p1opts, variants: mkVariants(p1opts, [42, 38, 27, 12, 30, 25, 18, 0, 22, 2, 14, 8], 2800), updatedMin: 120, cats: ["Tops > T-Shirts > Oversized"], tags: ["bestseller"] },
-  { id: "p2", name: "Classic Crew Tee", status: "Active", type: "variable", basePrice: 2200, options: p2opts, variants: mkVariants(p2opts, [55, 61, 44, 39, 50, 47], 2200), updatedMin: 400, cats: ["Tops > T-Shirts"], tags: [] },
-  { id: "p3", name: "Boxy Heavyweight Tee", status: "Active", type: "variable", basePrice: 3200, options: p3opts, variants: mkVariants(p3opts, [4, 3, 0, 5, 2, 1], 3200), updatedMin: 2000, cats: ["Tops > T-Shirts"], tags: ["new"] },
-  { id: "p4", name: "Linen Camp Shirt", status: "Active", type: "simple", price: 4800, compareAt: 5600, sku: "LCS-01", trackInv: true, qty: 18, lowAt: 5, updatedMin: 3100, cats: ["Tops > Shirts"], tags: [] },
-  { id: "p5", name: "Ribbed Tank", status: "Active", type: "simple", price: 1900, compareAt: "", sku: "RT-02", trackInv: true, qty: 0, lowAt: 5, updatedMin: 5200, cats: ["Tops"], tags: [] },
-  { id: "p6", name: "Dad Cap", status: "Active", type: "simple", price: 1500, compareAt: "", sku: "DC-05", trackInv: true, qty: 42, lowAt: 5, updatedMin: 7800, cats: ["Accessories"], tags: [] },
-  { id: "p7", name: "Canvas Tote", status: "Draft", type: "simple", price: 1900, compareAt: "", sku: "", trackInv: true, qty: 60, lowAt: 5, updatedMin: 9900, cats: ["Accessories"], tags: ["new"] },
-];
 
 const ADDRESS = "No. 24, Flower Road\nColombo 07\nWestern Province, 00700";
 
@@ -545,37 +476,20 @@ export function deriveCustomers(orders: Order[]): Customer[] {
     .sort((a, b) => b.spent - a.spent);
 }
 
-export function stockLevel(p: Product): StockLevel {
-  if (p.type === "simple") {
-    if (!p.trackInv) return "ok";
-    if ((p.qty ?? 0) <= 0) return "out";
-    if ((p.qty ?? 0) <= (p.lowAt ?? 5)) return "low";
-    return "ok";
-  }
-  const qs = (p.variants ?? []).map((v) => v.qty);
-  if (qs.every((q) => q <= 0)) return "out";
-  if (qs.some((q) => q <= 5)) return "low";
-  return "ok";
-}
-
+// Product-level low-stock for the dashboard. Summaries don't carry per-variant
+// stock, so this is coarser than the old per-variant list — good enough for the
+// "needs attention" widget; the products page (filtered by ?stock=low) is the
+// drill-down.
 export interface LowItem {
-  product: Product;
+  id: string;
   label: string;
   qty: number;
 }
 
-export function lowStockItems(products: Product[]): LowItem[] {
-  const out: LowItem[] = [];
-  for (const p of products) {
-    if (p.type === "simple") {
-      if (p.trackInv && (p.qty ?? 0) <= (p.lowAt ?? 5))
-        out.push({ product: p, label: p.name, qty: p.qty ?? 0 });
-    } else {
-      for (const v of p.variants ?? [])
-        if (v.qty <= 5) out.push({ product: p, label: `${p.name} — ${v.key}`, qty: v.qty });
-    }
-  }
-  return out;
+export function lowStockItems(summaries: ProductSummary[]): LowItem[] {
+  return summaries
+    .filter((p) => summaryStock(p) !== "ok")
+    .map((p) => ({ id: p.id, label: p.title, qty: p.totalStock }));
 }
 
 /** Plausible revenue series for the dashboard chart (same shape as the design). */
