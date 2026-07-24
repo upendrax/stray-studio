@@ -1,0 +1,106 @@
+---
+import Layout from "../../components/Layout.astro";
+import { apiFor } from "../../lib/api";
+const api = apiFor(Astro);
+---
+
+<Layout title="Sign in">
+  <div class="u-container flex justify-center py-16">
+    <div class="w-full max-w-sm">
+      <span class="u-label">Account</span>
+      <h1 class="mt-2 text-3xl">Sign in</h1>
+      <p class="mt-2 text-sm text-muted">Enter your email and we'll send you a one-time code — no password needed.</p>
+
+      <!-- Step 1: email -->
+      <form id="email-form" class="mt-8 space-y-3">
+        <label class="block">
+          <span class="mb-1 block text-sm">Email</span>
+          <input id="email" name="email" type="email" required autocomplete="email" class="field" />
+        </label>
+        <button type="submit" id="email-btn" class="w-full rounded-[var(--radius-brand)] bg-accent px-6 py-3 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-40">
+          Send code
+        </button>
+      </form>
+
+      <!-- Step 2: OTP -->
+      <form id="otp-form" hidden class="mt-8 space-y-3">
+        <p class="text-sm text-muted">We sent a 6-digit code to <span id="otp-email" class="font-medium text-ink"></span>.</p>
+        <label class="block">
+          <span class="mb-1 block text-sm">Code</span>
+          <input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" required class="field font-mono tracking-[0.3em]" placeholder="••••••" />
+        </label>
+        <button type="submit" id="otp-btn" class="w-full rounded-[var(--radius-brand)] bg-accent px-6 py-3 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-40">
+          Sign in
+        </button>
+        <button type="button" id="otp-back" class="w-full text-sm text-muted hover:text-ink">Use a different email</button>
+      </form>
+
+      <p id="login-msg" hidden class="u-label mt-4"></p>
+    </div>
+  </div>
+
+  <script define:vars={{ apiBase: api.base }}>window.__STORE_BASE__ = apiBase;</script>
+
+  <script>
+    import { sendOtp, verifyOtp } from "../../lib/account";
+
+    const base: string = (window as any).__STORE_BASE__;
+    const params = new URLSearchParams(location.search);
+    const redirect = params.get("redirect") || "/account";
+
+    const emailForm = document.getElementById("email-form") as HTMLFormElement;
+    const otpForm = document.getElementById("otp-form") as HTMLFormElement;
+    const msg = document.getElementById("login-msg")!;
+    let email = "";
+
+    const setMsg = (text: string, kind: "error" | "info" = "error") => {
+      msg.hidden = false;
+      msg.textContent = text;
+      msg.className = `u-label mt-4 ${kind === "error" ? "!text-sale" : "!text-accent"}`;
+    };
+
+    emailForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("email-btn") as HTMLButtonElement;
+      email = (document.getElementById("email") as HTMLInputElement).value.trim();
+      msg.hidden = true;
+      btn.disabled = true;
+      btn.textContent = "Sending…";
+      try {
+        await sendOtp(base, email);
+        (document.getElementById("otp-email") as HTMLElement).textContent = email;
+        emailForm.hidden = true;
+        otpForm.hidden = false;
+        (document.getElementById("otp") as HTMLInputElement).focus();
+      } catch (err) {
+        setMsg(err instanceof Error ? err.message : "Couldn't send the code.");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Send code";
+      }
+    });
+
+    otpForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("otp-btn") as HTMLButtonElement;
+      const otp = (document.getElementById("otp") as HTMLInputElement).value.trim();
+      msg.hidden = true;
+      btn.disabled = true;
+      btn.textContent = "Signing in…";
+      try {
+        await verifyOtp(base, email, otp);
+        location.href = redirect;
+      } catch {
+        setMsg("That code didn't work. Check it and try again.");
+        btn.disabled = false;
+        btn.textContent = "Sign in";
+      }
+    });
+
+    document.getElementById("otp-back")!.addEventListener("click", () => {
+      otpForm.hidden = true;
+      emailForm.hidden = false;
+      msg.hidden = true;
+    });
+  </script>
+</Layout>

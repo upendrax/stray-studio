@@ -25,6 +25,12 @@ const anyMethod = payhereOn || bankOn;
     ) : (
       <form id="checkout-form" class="grid gap-12 lg:grid-cols-[1.4fr_1fr]">
         <div class="space-y-10">
+          <!-- Saved address (signed-in shoppers) -->
+          <div id="co-saved" hidden class="rounded-[var(--radius-brand)] border border-line bg-panel/40 p-4">
+            <label for="co-addr-select" class="u-label">Deliver to a saved address</label>
+            <select id="co-addr-select" class="field mt-2"></select>
+          </div>
+
           <!-- Contact -->
           <section>
             <div class="u-label mb-4">Contact</div>
@@ -127,13 +133,44 @@ const anyMethod = payhereOn || bankOn;
   <script>
     import { readBag, writeBag } from "../lib/bag";
     import { money } from "../lib/format";
-    import type { CartValidation } from "../lib/types";
+    import { fetchMe, getAddresses } from "../lib/account";
+    import type { Address, CartValidation } from "../lib/types";
 
     const base: string = (window as any).__STORE_BASE__;
     const DKEY = "stray:discount:v1";
     const form = document.getElementById("checkout-form") as HTMLFormElement | null;
     if (form) {
       const el = (id: string) => document.getElementById(id)!;
+      const setField = (name: string, value: string) => {
+        const input = form.elements.namedItem(name) as HTMLInputElement | null;
+        if (input) input.value = value;
+      };
+
+      // Prefill for signed-in shoppers: email + saved addresses.
+      async function prefill() {
+        const me = await fetchMe(base).catch(() => null);
+        if (!me) return;
+        if (me.email) setField("email", me.email);
+        const addrs = await getAddresses(base).catch(() => [] as Address[]);
+        if (!addrs.length) return;
+
+        const apply = (a: Address) => {
+          setField("name", a.recipientName);
+          setField("phone", a.phone);
+          setField("line1", a.line1);
+          setField("line2", a.line2 ?? "");
+          setField("city", a.city);
+          setField("postalCode", a.postalCode ?? "");
+        };
+        const box = el("co-saved");
+        const sel = el("co-addr-select") as HTMLSelectElement;
+        box.hidden = false;
+        sel.innerHTML = addrs.map((a, i) => `<option value="${i}">${a.recipientName} — ${a.line1}, ${a.city}</option>`).join("");
+        const def = addrs.find((a) => a.isDefault) ?? addrs[0]!;
+        apply(def);
+        sel.value = String(addrs.indexOf(def));
+        sel.addEventListener("change", () => apply(addrs[Number(sel.value)]!));
+      }
 
       async function loadSummary() {
         const bag = readBag();
@@ -248,6 +285,7 @@ const anyMethod = payhereOn || bankOn;
       }
 
       loadSummary();
+      prefill();
     }
   </script>
 </Layout>

@@ -4,6 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import { createAuth, trustedOrigins } from "./auth";
 import { adminRoutes } from "./routes/admin";
 import { storeRoutes, handlePayhereWebhook } from "./routes/store";
+import { accountRoutes } from "./routes/account";
 import { devRoutes } from "./routes/dev";
 import type { AppEnv } from "./lib/context";
 
@@ -41,6 +42,10 @@ app.on(["GET", "POST"], "/api/auth/*", (c) =>
 
 // Owner-only Studio API (guards session internally).
 app.route("/api/admin", adminRoutes);
+
+// Signed-in customer account (order history, addresses). Registered before the
+// public store routes so /api/store/account/* resolves here.
+app.route("/api/store/account", accountRoutes);
 
 // Public storefront catalog API (products, categories, settings). Read-only,
 // unauthenticated — only active products are exposed.

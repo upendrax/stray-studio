@@ -14,6 +14,13 @@ export const sessionMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
   await next();
 };
 
+// Gate for the storefront account API: any signed-in user (customers use
+// email OTP). Attach sessionMiddleware ahead of this.
+export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
+  if (!c.get("user")) throw new HTTPException(401, { message: "Sign in required" });
+  await next();
+};
+
 // Gate for the Studio admin API: a signed-in owner is required.
 // (Single-admin model — staff is reserved but unused in v1.)
 export const requireOwner: MiddlewareHandler<AppEnv> = async (c, next) => {

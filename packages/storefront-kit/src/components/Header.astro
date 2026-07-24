@@ -28,6 +28,13 @@ const nav = categories
       ))}
     </nav>
 
+    <div class="flex items-center gap-2">
+    <a href="/account" class="grid size-9 place-items-center rounded-[var(--radius-brand)] border border-line transition-colors hover:border-ink" aria-label="Account">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+        <circle cx="12" cy="8" r="3.2" />
+        <path d="M5 20a7 7 0 0 1 14 0" />
+      </svg>
+    </a>
     <a
       href="/cart"
       class="group flex items-center gap-2 rounded-[var(--radius-brand)] border border-line px-3 py-1.5 transition-colors hover:border-ink"
@@ -44,6 +51,7 @@ const nav = categories
         class="min-w-4 rounded-full bg-accent px-1 text-center font-mono text-[0.625rem] leading-4 text-accent-ink"
       >0</span>
     </a>
+    </div>
   </div>
 
   {nav.length > 0 && (

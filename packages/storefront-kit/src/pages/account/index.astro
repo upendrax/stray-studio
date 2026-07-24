@@ -1,0 +1,181 @@
+---
+import Layout from "../../components/Layout.astro";
+import { apiFor } from "../../lib/api";
+const api = apiFor(Astro);
+---
+
+<Layout title="My account">
+  <div class="u-container py-12">
+    <div id="account-loading" class="u-label py-8">Loading…</div>
+
+    <div id="account-body" hidden>
+      <div class="mb-10 flex items-end justify-between">
+        <div>
+          <span class="u-label">Account</span>
+          <h1 class="mt-2 text-4xl">My account</h1>
+          <p id="account-email" class="mt-1 text-sm text-muted"></p>
+        </div>
+        <button id="signout" class="rounded-[var(--radius-brand)] border border-line px-4 py-2 text-sm transition-colors hover:border-ink">Sign out</button>
+      </div>
+
+      <div class="grid gap-12 lg:grid-cols-[1.4fr_1fr]">
+        <!-- Orders -->
+        <section>
+          <div class="u-label mb-4">Order history</div>
+          <div id="orders"></div>
+        </section>
+
+        <!-- Addresses -->
+        <section>
+          <div class="mb-4 flex items-center justify-between">
+            <div class="u-label">Saved addresses</div>
+            <button id="addr-add" class="u-label hover:text-ink">+ Add</button>
+          </div>
+          <div id="addresses" class="space-y-3"></div>
+
+          <form id="addr-form" hidden class="mt-4 space-y-3 rounded-[var(--radius-brand)] border border-line p-4">
+            <input type="hidden" name="id" />
+            <div class="grid gap-3 sm:grid-cols-2">
+              <input name="label" placeholder="Label (Home, Office)" class="field" />
+              <input name="recipientName" placeholder="Full name" required class="field" />
+            </div>
+            <input name="phone" placeholder="Phone" required class="field" />
+            <input name="line1" placeholder="Address" required class="field" />
+            <input name="line2" placeholder="Apartment, suite (optional)" class="field" />
+            <div class="grid gap-3 sm:grid-cols-2">
+              <input name="city" placeholder="City" required class="field" />
+              <input name="postalCode" placeholder="Postal code" class="field" />
+            </div>
+            <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="isDefault" /> Set as default</label>
+            <div class="flex gap-2">
+              <button type="submit" class="rounded-[var(--radius-brand)] bg-accent px-4 py-2 text-sm font-medium text-accent-ink">Save</button>
+              <button type="button" id="addr-cancel" class="rounded-[var(--radius-brand)] border border-line px-4 py-2 text-sm">Cancel</button>
+            </div>
+            <p id="addr-msg" hidden class="u-label !text-sale"></p>
+          </form>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script define:vars={{ apiBase: api.base }}>window.__STORE_BASE__ = apiBase;</script>
+
+  <script>
+    import { fetchMe, getOrders, getAddresses, saveAddress, deleteAddress, signOut } from "../../lib/account";
+    import { money } from "../../lib/format";
+    import type { Address } from "../../lib/types";
+
+    const base: string = (window as any).__STORE_BASE__;
+    const el = (id: string) => document.getElementById(id)!;
+
+    const STATUS: Record<string, string> = {
+      pending: "Order received", paid: "Paid", shipped: "Shipped",
+      delivered: "Delivered", cancelled: "Cancelled", refunded: "Refunded",
+    };
+
+    async function init() {
+      const me = await fetchMe(base).catch(() => null);
+      if (!me) { location.href = "/account/login?redirect=/account"; return; }
+      el("account-email").textContent = me.email;
+      el("account-loading").hidden = true;
+      el("account-body").hidden = false;
+      await Promise.all([loadOrders(), loadAddresses()]);
+    }
+
+    async function loadOrders() {
+      const orders = await getOrders(base);
+      if (orders.length === 0) {
+        el("orders").innerHTML = `<p class="text-sm text-muted">No orders yet. <a href="/products" class="u-underline">Start shopping</a>.</p>`;
+        return;
+      }
+      el("orders").innerHTML = `<ul class="divide-y divide-line border-y border-line">${orders.map((o) => {
+        const img = o.image ? `${base}/api/images/${o.image}` : "";
+        return `<li class="flex items-center gap-4 py-4">
+          <div class="aspect-[4/5] w-12 shrink-0 overflow-hidden rounded-[var(--radius-brand)] bg-panel">${img ? `<img src="${img}" alt="" class="h-full w-full object-cover"/>` : ""}</div>
+          <div class="flex-1">
+            <div class="text-sm font-medium">Order #${o.number}</div>
+            <div class="u-label mt-0.5">${STATUS[o.status] ?? o.status} · ${o.itemCount} item${o.itemCount === 1 ? "" : "s"}</div>
+          </div>
+          <span class="font-mono text-sm">${money(o.total)}</span>
+        </li>`;
+      }).join("")}</ul>`;
+    }
+
+    let addresses: Address[] = [];
+    async function loadAddresses() {
+      addresses = await getAddresses(base);
+      if (addresses.length === 0) {
+        el("addresses").innerHTML = `<p class="text-sm text-muted">No saved addresses yet.</p>`;
+        return;
+      }
+      el("addresses").innerHTML = addresses.map((a) => `
+        <div class="rounded-[var(--radius-brand)] border border-line p-4">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <div class="text-sm font-medium">${a.recipientName}${a.label ? ` · <span class="text-muted">${a.label}</span>` : ""}${a.isDefault ? ` <span class="u-label !text-accent">Default</span>` : ""}</div>
+              <div class="mt-1 text-sm text-muted">${[a.line1, a.line2, a.city, a.postalCode].filter(Boolean).join(", ")}</div>
+              <div class="u-label mt-1">${a.phone}</div>
+            </div>
+            <div class="flex shrink-0 gap-3">
+              <button data-edit="${a.id}" class="u-label hover:text-ink">Edit</button>
+              <button data-del="${a.id}" class="u-label hover:text-sale">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+
+      el("addresses").querySelectorAll<HTMLButtonElement>("[data-edit]").forEach((b) =>
+        b.addEventListener("click", () => openForm(addresses.find((a) => a.id === b.dataset.edit))));
+      el("addresses").querySelectorAll<HTMLButtonElement>("[data-del]").forEach((b) =>
+        b.addEventListener("click", async () => { await deleteAddress(base, b.dataset.del!); await loadAddresses(); }));
+    }
+
+    const form = el("addr-form") as HTMLFormElement;
+    function openForm(a?: Address) {
+      form.hidden = false;
+      form.reset();
+      (form.elements.namedItem("id") as HTMLInputElement).value = a?.id ?? "";
+      if (a) {
+        for (const k of ["label", "recipientName", "phone", "line1", "line2", "city", "postalCode"] as const) {
+          (form.elements.namedItem(k) as HTMLInputElement).value = (a[k] as string) ?? "";
+        }
+        (form.elements.namedItem("isDefault") as HTMLInputElement).checked = a.isDefault;
+      }
+      (form.elements.namedItem("recipientName") as HTMLInputElement).focus();
+    }
+
+    el("addr-add").addEventListener("click", () => openForm());
+    el("addr-cancel").addEventListener("click", () => { form.hidden = true; });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const id = String(fd.get("id") || "");
+      const body = {
+        label: String(fd.get("label") || "") || null,
+        recipientName: String(fd.get("recipientName") || ""),
+        phone: String(fd.get("phone") || ""),
+        line1: String(fd.get("line1") || ""),
+        line2: String(fd.get("line2") || "") || null,
+        city: String(fd.get("city") || ""),
+        postalCode: String(fd.get("postalCode") || "") || null,
+        isDefault: fd.get("isDefault") === "on",
+      };
+      const msg = el("addr-msg");
+      try {
+        await saveAddress(base, body, id || undefined);
+        form.hidden = true;
+        await loadAddresses();
+      } catch (err) {
+        msg.hidden = false;
+        msg.textContent = err instanceof Error ? err.message : "Couldn't save the address.";
+      }
+    });
+
+    el("signout").addEventListener("click", async () => {
+      await signOut(base);
+      location.href = "/";
+    });
+
+    init();
+  </script>
+</Layout>

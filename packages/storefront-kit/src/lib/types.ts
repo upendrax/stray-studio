@@ -110,6 +110,32 @@ export type CartValidation = {
   currency: string;
 };
 
+// --- Account (/api/store/account/*) --------------------------------------
+
+export type AccountOrder = {
+  number: number;
+  status: OrderConfirmation["status"];
+  paymentStatus: OrderConfirmation["paymentStatus"];
+  total: number;
+  itemCount: number;
+  image: string | null;
+  createdAt: number;
+};
+
+export type Address = {
+  id: string;
+  userId: string;
+  label: string | null;
+  recipientName: string;
+  phone: string;
+  line1: string;
+  line2: string | null;
+  city: string;
+  postalCode: string | null;
+  isDefault: boolean;
+  createdAt: number;
+};
+
 // --- Order confirmation (/api/store/orders/:number) ----------------------
 
 export type OrderConfirmation = {

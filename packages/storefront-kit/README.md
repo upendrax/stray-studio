@@ -9,9 +9,22 @@ checkout from a client's `@stray/core` API Worker over `/api/store/*`.
 - **Catalog** — home, shop-all (sort + category filter), collection pages, and
   product detail with a client-side variant selector (colour swatches + size
   pills, live price/stock, colour-driven gallery). ✅
-- **Bag** — localStorage lines + header count; `/cart` shows a preview.
-  Server-validated cart + checkout land in the next milestone.
-- **Account / checkout / provisioning** — not started.
+- **Cart** — localStorage bag revalidated against the API (authoritative prices,
+  stock caps, discount code, shipping); `/cart` has qty steppers, remove, code
+  entry + live totals. ✅
+- **Checkout** — `/checkout` (contact + shipping + payment), real order creation
+  via `/api/store/checkout`, PayHere hosted redirect + bank transfer with slip
+  upload, `/orders/[number]` confirmation. ✅
+- **Account** — passwordless email-OTP sign-in (`/account/login`), `/account`
+  with order history + saved addresses, checkout prefill for signed-in
+  shoppers. ✅
+- **Provisioning** — per-client deploy script: not started.
+
+> Cross-domain auth note: the session cookie is set on the core API origin.
+> In production, deploy the storefront and API as subdomains of one registrable
+> domain (e.g. `shop.brand.lk` + `api.brand.lk`) so the `SameSite=Lax` cookie
+> flows; otherwise enable Better Auth cross-subdomain cookies. Dev works as-is
+> (both on `localhost`). OTP emails are `console.log`ged until Resend is wired.
 
 ## Local development
 
