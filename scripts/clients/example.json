@@ -1,0 +1,24 @@
+{
+  "slug": "acme",
+  "storeName": "Acme Apparel",
+  "core": {
+    "name": "acme-core",
+    "url": "https://api.acme.lk",
+    "customDomain": "api.acme.lk",
+    "d1Name": "acme-db",
+    "r2Bucket": "acme-images"
+  },
+  "storefront": {
+    "name": "acme-shop",
+    "url": "https://acme.lk",
+    "customDomain": "acme.lk"
+  },
+  "owner": {
+    "email": "owner@acme.lk",
+    "name": "Acme Owner"
+  },
+  "secrets": {
+    "RESEND_API_KEY": "",
+    "PAYHERE_MERCHANT_SECRET": ""
+  }
+}

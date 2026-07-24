@@ -8,4 +8,7 @@ export type Env = {
   BETTER_AUTH_SECRET: string;
   RESEND_API_KEY: string;
   PAYHERE_MERCHANT_SECRET: string;
+  // One-time bootstrap token, set only while provisioning a new store. When
+  // unset (normal operation) the /api/provision/* routes 404.
+  PROVISION_TOKEN?: string;
 };

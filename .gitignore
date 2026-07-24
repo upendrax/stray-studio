@@ -13,3 +13,9 @@ Thumbs.db
 .turbo/
 coverage/
 drizzle/meta/_journal.json.bak
+
+# Provisioning: generated per-client wrangler configs + captured state, and
+# real client configs (may hold secrets). The example config stays tracked.
+packages/*/wrangler.*.jsonc
+scripts/clients/*.json
+!scripts/clients/example.json

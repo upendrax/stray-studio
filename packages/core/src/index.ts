@@ -5,6 +5,7 @@ import { createAuth, trustedOrigins } from "./auth";
 import { adminRoutes } from "./routes/admin";
 import { storeRoutes, handlePayhereWebhook } from "./routes/store";
 import { accountRoutes } from "./routes/account";
+import { provisionRoutes } from "./routes/provision";
 import { devRoutes } from "./routes/dev";
 import type { AppEnv } from "./lib/context";
 
@@ -50,6 +51,10 @@ app.route("/api/store/account", accountRoutes);
 // Public storefront catalog API (products, categories, settings). Read-only,
 // unauthenticated — only active products are exposed.
 app.route("/api/store", storeRoutes);
+
+// One-time store bootstrap (owner seed), guarded by PROVISION_TOKEN — 404s
+// unless that secret is set (only during provisioning).
+app.route("/api/provision", provisionRoutes);
 
 // Local-only bootstrap/dev helpers (404 in production).
 app.route("/api/dev", devRoutes);
