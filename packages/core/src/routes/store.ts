@@ -1,10 +1,14 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { createDb, schema } from "../db";
 import type { Db } from "../db";
 import { parse } from "../lib/validate";
+import { newId } from "../lib/id";
+import { md5 } from "../lib/md5";
+import { sessionMiddleware } from "../middleware/auth";
 import type { AppEnv } from "../lib/context";
 
 // Public storefront API. Everything here is unauthenticated and read-only —
@@ -692,6 +696,298 @@ store.post("/cart/validate", async (c) => {
   const cart = await priceCart(db, body.items, body.discountCode, blob);
   return c.json({ cart });
 });
+
+// ---------------------------------------------------------------------------
+// Checkout — creates the real order from a re-validated cart. Guest by default;
+// links to the customer when a session is present. Payment is either a PayHere
+// hosted redirect (hash signed here) or bank transfer with a slip upload.
+// ---------------------------------------------------------------------------
+
+// Sequential order numbers via the single-row counter (same as the dev seeder).
+async function nextOrderNumber(db: Db): Promise<number> {
+  const row = await db.select().from(schema.counters).where(eq(schema.counters.name, "order_number")).get();
+  const next = (row?.value ?? 1000) + 1;
+  if (row) await db.update(schema.counters).set({ value: next }).where(eq(schema.counters.name, "order_number"));
+  else await db.insert(schema.counters).values({ name: "order_number", value: next });
+  return next;
+}
+
+// PayHere request hash: md5(merchant_id + order_id + amount + currency +
+// UPPER(md5(secret))), uppercased. Amount is fixed to 2 decimals, no separators.
+function payhereHash(merchantId: string, orderId: string, amount: string, currency: string, secret: string): string {
+  return md5(merchantId + orderId + amount + currency + md5(secret).toUpperCase()).toUpperCase();
+}
+const payAmount = (cents: number) => (cents / 100).toFixed(2);
+
+const checkoutBody = z.object({
+  email: z.string().email(),
+  phone: z.string().min(5).max(30),
+  ship: z.object({
+    name: z.string().min(1).max(120),
+    line1: z.string().min(1).max(200),
+    line2: z.string().max(200).nullable().optional(),
+    city: z.string().min(1).max(100),
+    postalCode: z.string().max(20).nullable().optional(),
+  }),
+  items: z.array(z.object({ variantId: z.string().min(1), quantity: z.number().int().min(1).max(99) })).min(1).max(100),
+  discountCode: z.string().trim().max(60).optional(),
+  paymentMethod: z.enum(["payhere", "bank"]),
+});
+
+store.post("/checkout", sessionMiddleware, async (c) => {
+  const db = createDb(c.env.DB);
+  const body = parse(checkoutBody, await c.req.json().catch(() => ({})));
+  const blob = await readStoreBlob(db);
+
+  // Re-price authoritatively. If anything changed since the bag was shown,
+  // bounce with the fresh cart so the storefront can show the difference.
+  const cart = await priceCart(db, body.items, body.discountCode, blob);
+  const purchasable = cart.items.filter((i) => !i.removed);
+  const changed = cart.items.some((i) => i.removed || i.adjusted);
+  if (purchasable.length === 0 || changed) {
+    return c.json({ error: "Your bag changed since you reviewed it — please check it and try again.", cart }, 409);
+  }
+  if (cart.total <= 0) return c.json({ error: "Your bag is empty.", cart }, 409);
+
+  // Payment method must be switched on in settings.
+  if (body.paymentMethod === "payhere" && !blob.phOn) throw new HTTPException(400, { message: "Card payment isn't available right now" });
+  if (body.paymentMethod === "bank" && !blob.bankOn) throw new HTTPException(400, { message: "Bank transfer isn't available right now" });
+
+  // Discount: enforce once-per-customer now that we have the email.
+  let redemption: { discountId: string } | null = null;
+  if (cart.discount?.valid && cart.discountAmount > 0) {
+    const d = await db.select().from(schema.discounts).where(eq(schema.discounts.code, cart.discount.code)).get();
+    if (d) {
+      if (d.oncePerCustomer) {
+        const used = await db
+          .select({ id: schema.discountRedemptions.id })
+          .from(schema.discountRedemptions)
+          .where(and(eq(schema.discountRedemptions.discountId, d.id), eq(schema.discountRedemptions.email, body.email)))
+          .get();
+        if (used) return c.json({ error: "You've already used that discount code.", cart }, 409);
+      }
+      redemption = { discountId: d.id };
+    }
+  }
+
+  const user = c.get("user");
+  const number = await nextOrderNumber(db);
+  const orderId = newId();
+
+  await db.insert(schema.orders).values({
+    id: orderId,
+    number,
+    status: "pending",
+    userId: user?.id ?? null,
+    email: body.email,
+    phone: body.phone,
+    shipName: body.ship.name,
+    shipLine1: body.ship.line1,
+    shipLine2: body.ship.line2 ?? null,
+    shipCity: body.ship.city,
+    shipPostalCode: body.ship.postalCode ?? null,
+    subtotal: cart.subtotal,
+    discountAmount: cart.discountAmount,
+    discountCode: cart.discount?.valid ? cart.discount.code : null,
+    shippingAmount: cart.shipping,
+    total: cart.total,
+    paymentMethod: body.paymentMethod,
+    paymentStatus: "pending",
+  });
+
+  await db.insert(schema.orderItems).values(
+    purchasable.map((i) => ({
+      id: newId(),
+      orderId,
+      productId: i.productId ?? null,
+      variantId: i.variantId,
+      title: i.title ?? "Item",
+      variantTitle: i.variantLabel ?? null,
+      sku: null,
+      imageR2Key: i.image ?? null,
+      unitPrice: i.unitPrice ?? 0,
+      quantity: i.quantity,
+    })),
+  );
+
+  // Decrement stock for tracked products only.
+  const variantIds = purchasable.map((i) => i.variantId);
+  const vrows = await db.select().from(schema.variants).where(inArray(schema.variants.id, variantIds)).all();
+  const vById = new Map(vrows.map((v) => [v.id, v]));
+  const pids = [...new Set(vrows.map((v) => v.productId))];
+  const prows = pids.length
+    ? await db.select({ id: schema.products.id, trackInventory: schema.products.trackInventory }).from(schema.products).where(inArray(schema.products.id, pids)).all()
+    : [];
+  const tracked = new Map(prows.map((p) => [p.id, p.trackInventory]));
+  for (const i of purchasable) {
+    const v = vById.get(i.variantId);
+    if (v && tracked.get(v.productId)) {
+      await db.update(schema.variants).set({ quantity: Math.max(0, v.quantity - i.quantity) }).where(eq(schema.variants.id, v.id));
+    }
+  }
+
+  if (redemption) {
+    await db.insert(schema.discountRedemptions).values({ id: newId(), discountId: redemption.discountId, orderId, email: body.email });
+    await db.update(schema.discounts).set({ usedCount: sql`${schema.discounts.usedCount} + 1` }).where(eq(schema.discounts.id, redemption.discountId));
+  }
+
+  await db.insert(schema.orderEvents).values({ id: newId(), orderId, type: "placed", message: "Order placed", actorType: "customer" });
+
+  const orderOut = { id: orderId, number, total: cart.total, email: body.email, paymentMethod: body.paymentMethod };
+
+  if (body.paymentMethod === "bank") {
+    return c.json({ order: orderOut, payment: { method: "bank", bankDetails: String(blob.bankDetails ?? "") } }, 201);
+  }
+
+  // PayHere hosted checkout: return the exact form the storefront auto-submits.
+  const merchantId = String(blob.phId ?? "");
+  const amount = payAmount(cart.total);
+  const orderRef = String(number);
+  const hash = payhereHash(merchantId, orderRef, amount, "LKR", c.env.PAYHERE_MERCHANT_SECRET);
+  const sandbox = Boolean(blob.phSandbox);
+  const storefront = c.env.STOREFRONT_URL || "http://localhost:4321";
+  const [firstName, ...rest] = body.ship.name.split(" ");
+  return c.json(
+    {
+      order: orderOut,
+      payment: {
+        method: "payhere",
+        sandbox,
+        action: sandbox ? "https://sandbox.payhere.lk/pay/checkout" : "https://www.payhere.lk/pay/checkout",
+        fields: {
+          merchant_id: merchantId,
+          return_url: `${storefront}/orders/${number}?token=${orderId}`,
+          cancel_url: `${storefront}/cart`,
+          notify_url: `${c.env.APP_URL}/api/webhooks/payhere`,
+          order_id: orderRef,
+          items: `Order #${number}`,
+          currency: "LKR",
+          amount,
+          first_name: firstName || body.ship.name,
+          last_name: rest.join(" "),
+          email: body.email,
+          phone: body.phone,
+          address: body.ship.line1,
+          city: body.ship.city,
+          country: "Sri Lanka",
+          hash,
+        },
+      },
+    },
+    201,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Order confirmation + bank-slip upload. Guests authorise with the order's
+// opaque id (returned by checkout); logged-in customers match by session.
+// ---------------------------------------------------------------------------
+
+const SLIP_EXT: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "application/pdf": "pdf",
+};
+
+async function authorizeOrder(c: Context<AppEnv>, db: Db, number: number) {
+  const order = await db.select().from(schema.orders).where(eq(schema.orders.number, number)).get();
+  if (!order) throw new HTTPException(404, { message: "Order not found" });
+  const token = c.req.query("token") || c.req.header("x-order-token");
+  const user = c.get("user");
+  const owns = user && (order.userId === user.id || order.email === user.email);
+  if (order.id !== token && !owns) throw new HTTPException(403, { message: "Not authorised for this order" });
+  return order;
+}
+
+store.get("/orders/:number", sessionMiddleware, async (c) => {
+  const db = createDb(c.env.DB);
+  const number = Number(c.req.param("number"));
+  if (!Number.isFinite(number)) throw new HTTPException(404, { message: "Order not found" });
+  const order = await authorizeOrder(c, db, number);
+  const items = await db.select().from(schema.orderItems).where(eq(schema.orderItems.orderId, order.id)).all();
+
+  return c.json({
+    order: {
+      number: order.number,
+      status: order.status,
+      email: order.email,
+      phone: order.phone,
+      shipName: order.shipName,
+      shipLine1: order.shipLine1,
+      shipLine2: order.shipLine2,
+      shipCity: order.shipCity,
+      shipPostalCode: order.shipPostalCode,
+      subtotal: order.subtotal,
+      discountAmount: order.discountAmount,
+      discountCode: order.discountCode,
+      shippingAmount: order.shippingAmount,
+      total: order.total,
+      paymentMethod: order.paymentMethod,
+      paymentStatus: order.paymentStatus,
+      slipUploaded: Boolean(order.slipR2Key),
+      createdAt: order.createdAt,
+      items: items.map((i) => ({
+        title: i.title,
+        variantTitle: i.variantTitle,
+        image: i.imageR2Key,
+        unitPrice: i.unitPrice,
+        quantity: i.quantity,
+      })),
+    },
+  });
+});
+
+// POST /api/store/orders/:number/slip — raw image/pdf body; bank orders only.
+store.post("/orders/:number/slip", sessionMiddleware, async (c) => {
+  const db = createDb(c.env.DB);
+  const number = Number(c.req.param("number"));
+  if (!Number.isFinite(number)) throw new HTTPException(404, { message: "Order not found" });
+  const order = await authorizeOrder(c, db, number);
+  if (order.paymentMethod !== "bank") throw new HTTPException(400, { message: "This order isn't a bank transfer" });
+
+  const contentType = (c.req.header("content-type") ?? "").split(";")[0]?.trim() ?? "";
+  const ext = SLIP_EXT[contentType];
+  if (!ext) throw new HTTPException(415, { message: "Upload a JPG, PNG, WebP or PDF" });
+  const buf = await c.req.arrayBuffer();
+  if (buf.byteLength === 0) throw new HTTPException(400, { message: "Empty upload" });
+  if (buf.byteLength > 5 * 1024 * 1024) throw new HTTPException(413, { message: "File is larger than 5 MB" });
+
+  const key = `slips/${order.id}.${ext}`;
+  await c.env.IMAGES.put(key, buf, { httpMetadata: { contentType } });
+  await db.update(schema.orders).set({ slipR2Key: key, slipUploadedAt: Date.now(), updatedAt: Date.now() }).where(eq(schema.orders.id, order.id));
+  await db.insert(schema.orderEvents).values({ id: newId(), orderId: order.id, type: "slip_uploaded", message: "Bank transfer slip uploaded", actorType: "customer" });
+
+  return c.json({ ok: true });
+});
+
+// Verify a PayHere IPN and mark the order paid. Exported so index.ts can mount
+// it at the spec path /api/webhooks/payhere.
+export async function handlePayhereWebhook(c: Context<AppEnv>) {
+  const db = createDb(c.env.DB);
+  const form = await c.req.parseBody();
+  const get = (k: string) => String(form[k] ?? "");
+  const merchantId = get("merchant_id");
+  const orderId = get("order_id");
+  const amount = get("payhere_amount");
+  const currency = get("payhere_currency");
+  const statusCode = get("status_code");
+  const sig = get("md5sig");
+
+  const local = md5(merchantId + orderId + amount + currency + statusCode + md5(c.env.PAYHERE_MERCHANT_SECRET).toUpperCase()).toUpperCase();
+  if (local !== sig) return c.text("invalid signature", 403);
+
+  const number = Number(orderId);
+  const order = await db.select().from(schema.orders).where(eq(schema.orders.number, number)).get();
+  if (!order) return c.text("unknown order", 404);
+
+  // status_code 2 = success; -1/-2/-3 = cancelled/failed/chargeback.
+  if (statusCode === "2" && order.paymentStatus !== "paid") {
+    await db.update(schema.orders).set({ status: "paid", paymentStatus: "paid", payhereRef: get("payment_id") || null, updatedAt: Date.now() }).where(eq(schema.orders.id, order.id));
+    await db.insert(schema.orderEvents).values({ id: newId(), orderId: order.id, type: "payment_paid", message: "Payment received via PayHere", actorType: "system" });
+  }
+  return c.text("OK");
+}
 
 // ---------------------------------------------------------------------------
 // Settings — public store info only (never the PayHere merchant secret).

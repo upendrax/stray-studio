@@ -1,0 +1,253 @@
+---
+import Layout from "../components/Layout.astro";
+import { apiFor } from "../lib/api";
+import type { StoreSettings } from "../lib/types";
+
+const api = apiFor(Astro);
+let settings: StoreSettings | null = null;
+try {
+  settings = await api.settings();
+} catch {
+  /* API down — form still renders, submit will surface the error. */
+}
+const payhereOn = settings?.payhere.enabled ?? false;
+const bankOn = settings?.bank.enabled ?? false;
+const bankDetails = settings?.bank.details ?? "";
+const anyMethod = payhereOn || bankOn;
+---
+
+<Layout title="Checkout">
+  <div class="u-container py-12">
+    <h1 class="mb-8 text-4xl">Checkout</h1>
+
+    {!anyMethod ? (
+      <p class="text-muted">Checkout isn't available right now. Please contact the store.</p>
+    ) : (
+      <form id="checkout-form" class="grid gap-12 lg:grid-cols-[1.4fr_1fr]">
+        <div class="space-y-10">
+          <!-- Contact -->
+          <section>
+            <div class="u-label mb-4">Contact</div>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <label class="block">
+                <span class="mb-1 block text-sm">Email</span>
+                <input name="email" type="email" required autocomplete="email" class="field" />
+              </label>
+              <label class="block">
+                <span class="mb-1 block text-sm">Phone</span>
+                <input name="phone" type="tel" required autocomplete="tel" class="field" placeholder="+94…" />
+              </label>
+            </div>
+          </section>
+
+          <!-- Shipping -->
+          <section>
+            <div class="u-label mb-4">Shipping address</div>
+            <div class="grid gap-4">
+              <label class="block">
+                <span class="mb-1 block text-sm">Full name</span>
+                <input name="name" required autocomplete="name" class="field" />
+              </label>
+              <label class="block">
+                <span class="mb-1 block text-sm">Address</span>
+                <input name="line1" required autocomplete="address-line1" class="field" placeholder="House no., street" />
+              </label>
+              <label class="block">
+                <span class="mb-1 block text-sm">Apartment, suite (optional)</span>
+                <input name="line2" autocomplete="address-line2" class="field" />
+              </label>
+              <div class="grid gap-4 sm:grid-cols-2">
+                <label class="block">
+                  <span class="mb-1 block text-sm">City</span>
+                  <input name="city" required autocomplete="address-level2" class="field" />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-sm">Postal code (optional)</span>
+                  <input name="postalCode" autocomplete="postal-code" class="field" />
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <!-- Payment -->
+          <section>
+            <div class="u-label mb-4">Payment</div>
+            <div class="space-y-3">
+              {payhereOn && (
+                <label class="flex cursor-pointer items-start gap-3 rounded-[var(--radius-brand)] border border-line p-4 has-[:checked]:border-ink">
+                  <input type="radio" name="paymentMethod" value="payhere" class="mt-1" checked />
+                  <span>
+                    <span class="block text-sm font-medium">Card / online</span>
+                    <span class="u-label">Secure payment via PayHere</span>
+                  </span>
+                </label>
+              )}
+              {bankOn && (
+                <label class="flex cursor-pointer items-start gap-3 rounded-[var(--radius-brand)] border border-line p-4 has-[:checked]:border-ink">
+                  <input type="radio" name="paymentMethod" value="bank" class="mt-1" checked={!payhereOn} />
+                  <span>
+                    <span class="block text-sm font-medium">Bank transfer</span>
+                    <span class="u-label">Transfer, then upload your slip on the next step</span>
+                    {bankDetails && <span class="mt-2 block whitespace-pre-line text-sm text-muted">{bankDetails}</span>}
+                  </span>
+                </label>
+              )}
+            </div>
+          </section>
+        </div>
+
+        <!-- Summary -->
+        <aside class="lg:sticky lg:top-24 lg:h-fit">
+          <div class="rounded-[var(--radius-brand)] border border-line bg-panel/50 p-6">
+            <div class="u-label mb-4">Order summary</div>
+            <ul id="co-lines" class="mb-4 space-y-3 border-b border-line pb-4 text-sm"></ul>
+            <dl class="space-y-2 text-sm">
+              <div class="flex justify-between"><dt class="text-muted">Subtotal</dt><dd id="co-subtotal" class="font-mono"></dd></div>
+              <div id="co-discount-row" hidden class="flex justify-between text-accent"><dt id="co-discount-label">Discount</dt><dd id="co-discount" class="font-mono"></dd></div>
+              <div class="flex justify-between"><dt class="text-muted">Shipping</dt><dd id="co-shipping" class="font-mono"></dd></div>
+            </dl>
+            <div class="mt-4 flex items-baseline justify-between border-t border-line pt-4">
+              <span class="font-display text-lg font-semibold">Total</span>
+              <span id="co-total" class="font-mono text-lg"></span>
+            </div>
+
+            <button id="co-submit" type="submit" class="mt-6 w-full rounded-[var(--radius-brand)] bg-accent px-6 py-3.5 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-40">
+              Place order
+            </button>
+            <p id="co-error" hidden class="u-label mt-3 !text-sale"></p>
+            <a href="/cart" class="mt-3 block text-center text-sm"><span class="u-underline">Back to bag</span></a>
+          </div>
+        </aside>
+      </form>
+    )}
+  </div>
+
+  <script define:vars={{ apiBase: api.base }}>window.__STORE_BASE__ = apiBase;</script>
+
+  <script>
+    import { readBag, writeBag } from "../lib/bag";
+    import { money } from "../lib/format";
+    import type { CartValidation } from "../lib/types";
+
+    const base: string = (window as any).__STORE_BASE__;
+    const DKEY = "stray:discount:v1";
+    const form = document.getElementById("checkout-form") as HTMLFormElement | null;
+    if (form) {
+      const el = (id: string) => document.getElementById(id)!;
+
+      async function loadSummary() {
+        const bag = readBag();
+        if (bag.length === 0) { location.href = "/cart"; return; }
+        const discountCode = localStorage.getItem(DKEY) || undefined;
+        const res = await fetch(`${base}/api/store/cart/validate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: bag.map((l) => ({ variantId: l.variantId, quantity: l.qty })), discountCode }),
+        });
+        renderSummary((await res.json()).cart as CartValidation);
+      }
+
+      function renderSummary(cart: CartValidation) {
+        el("co-lines").innerHTML = cart.items.filter((i) => !i.removed).map((i) => `
+          <li class="flex justify-between gap-3">
+            <span>${i.title ?? "Item"}${i.variantLabel ? ` · ${i.variantLabel}` : ""} <span class="text-muted">×${i.quantity}</span></span>
+            <span class="font-mono">${money((i.unitPrice ?? 0) * i.quantity)}</span>
+          </li>`).join("");
+        el("co-subtotal").textContent = money(cart.subtotal);
+        const dr = el("co-discount-row");
+        if (cart.discountAmount > 0 && cart.discount?.valid) {
+          dr.hidden = false;
+          el("co-discount-label").textContent = `Discount · ${cart.discount.code}`;
+          el("co-discount").textContent = `− ${money(cart.discountAmount)}`;
+        } else dr.hidden = true;
+        el("co-shipping").textContent = cart.shipping === 0 ? "Free" : money(cart.shipping);
+        el("co-total").textContent = money(cart.total);
+      }
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const submit = el("co-submit") as HTMLButtonElement;
+        const errEl = el("co-error");
+        errEl.hidden = true;
+        submit.disabled = true;
+        submit.textContent = "Placing order…";
+
+        const fd = new FormData(form);
+        const payload = {
+          email: String(fd.get("email") || ""),
+          phone: String(fd.get("phone") || ""),
+          ship: {
+            name: String(fd.get("name") || ""),
+            line1: String(fd.get("line1") || ""),
+            line2: String(fd.get("line2") || "") || null,
+            city: String(fd.get("city") || ""),
+            postalCode: String(fd.get("postalCode") || "") || null,
+          },
+          paymentMethod: String(fd.get("paymentMethod") || "bank"),
+          items: readBag().map((l) => ({ variantId: l.variantId, quantity: l.qty })),
+          discountCode: localStorage.getItem(DKEY) || undefined,
+        };
+
+        let res: Response;
+        try {
+          res = await fetch(`${base}/api/store/checkout`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify(payload),
+          });
+        } catch {
+          fail(submit, errEl, "Couldn't reach the store. Please try again.");
+          return;
+        }
+
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          if (data.cart) renderSummary(data.cart);
+          fail(submit, errEl, data.error || "Your bag changed — please review it.");
+          return;
+        }
+        if (!res.ok) {
+          fail(submit, errEl, data.error || "Something went wrong. Please try again.");
+          return;
+        }
+
+        // Success — the order exists. Clear the bag + code and move on.
+        const order = data.order;
+        writeBag([]);
+        localStorage.removeItem(DKEY);
+
+        if (data.payment?.method === "payhere") {
+          redirectToPayhere(data.payment);
+        } else {
+          location.href = `/orders/${order.number}?token=${order.id}`;
+        }
+      });
+
+      function fail(submit: HTMLButtonElement, errEl: HTMLElement, msg: string) {
+        submit.disabled = false;
+        submit.textContent = "Place order";
+        errEl.hidden = false;
+        errEl.textContent = msg;
+      }
+
+      // Build + auto-submit PayHere's hosted-checkout form.
+      function redirectToPayhere(payment: { action: string; fields: Record<string, string> }) {
+        const f = document.createElement("form");
+        f.method = "POST";
+        f.action = payment.action;
+        for (const [k, v] of Object.entries(payment.fields)) {
+          const input = document.createElement("input");
+          input.type = "hidden";
+          input.name = k;
+          input.value = v;
+          f.appendChild(input);
+        }
+        document.body.appendChild(f);
+        f.submit();
+      }
+
+      loadSummary();
+    }
+  </script>
+</Layout>

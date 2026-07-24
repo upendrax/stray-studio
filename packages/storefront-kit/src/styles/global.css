@@ -132,6 +132,21 @@ a:hover > .u-underline {
 }
 .opt-out.opt-pill { text-decoration: line-through; }
 
+/* Form fields (checkout, account) */
+.field {
+  width: 100%;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-brand);
+  background: var(--color-paper);
+  padding: 0.55rem 0.75rem;
+  font-size: 0.875rem;
+}
+.field:focus {
+  outline: none;
+  border-color: var(--color-ink);
+}
+.field::placeholder { color: var(--color-muted); }
+
 /* Gallery thumbnails */
 .thumb {
   border: 1px solid transparent;

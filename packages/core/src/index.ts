@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { createAuth, trustedOrigins } from "./auth";
 import { adminRoutes } from "./routes/admin";
-import { storeRoutes } from "./routes/store";
+import { storeRoutes, handlePayhereWebhook } from "./routes/store";
 import { devRoutes } from "./routes/dev";
 import type { AppEnv } from "./lib/context";
 
@@ -49,8 +49,8 @@ app.route("/api/store", storeRoutes);
 // Local-only bootstrap/dev helpers (404 in production).
 app.route("/api/dev", devRoutes);
 
-// Cart validation + checkout (POST /api/store/checkout) and the PayHere
-// webhook (/api/webhooks/payhere) land in the checkout phase.
+// PayHere IPN — server-to-server, verified by md5 signature (no CORS/session).
+app.post("/api/webhooks/payhere", handlePayhereWebhook);
 
 // Consistent JSON error envelope for the whole API.
 app.onError((err, c) => {

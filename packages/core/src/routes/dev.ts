@@ -299,6 +299,23 @@ dev.post("/seed-catalog", async (c) => {
     created.push(s.slug);
   }
 
+  // Ensure the store settings are checkout-ready in dev (shipping + both
+  // payment methods on). Existing owner-set values win; we only fill blanks
+  // and force phOn/bankOn true so the storefront checkout is testable.
+  const settingsRow = await db.select().from(schema.settings).where(eq(schema.settings.key, "store")).get();
+  let storeBlob: Record<string, unknown> = {};
+  if (settingsRow) { try { storeBlob = JSON.parse(settingsRow.value); } catch { storeBlob = {}; } }
+  const defaults = {
+    storeName: "Stray Studio", email: "hello@stray.lk", phone: "+94 11 234 5678",
+    address: "No. 48, Galle Road\nColombo 03", shipRate: "400", shipFree: "10000",
+    phId: "1224753", phSecret: "sandbox-secret", phSandbox: true,
+    bankDetails: "Commercial Bank — Kollupitiya\nStray Studio (Pvt) Ltd\nA/C 8001234567",
+  };
+  const mergedBlob = { ...defaults, ...storeBlob, phOn: true, bankOn: true };
+  const value = JSON.stringify(mergedBlob);
+  if (settingsRow) await db.update(schema.settings).set({ value, updatedAt: Date.now() }).where(eq(schema.settings.key, "store"));
+  else await db.insert(schema.settings).values({ key: "store", value });
+
   // A sample order-wide discount so the storefront cart/checkout can be tested.
   const code = "WELCOME10";
   const hasDiscount = await db.select({ id: schema.discounts.id }).from(schema.discounts).where(eq(schema.discounts.code, code)).get();

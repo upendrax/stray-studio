@@ -1,4 +1,4 @@
-import type { Category, ProductCard, ProductDetail, StoreSettings } from "./types";
+import type { Category, OrderConfirmation, ProductCard, ProductDetail, StoreSettings } from "./types";
 
 // Resolve the core API base. In production each client's storefront Worker sets
 // STORE_API_URL (read from the Cloudflare runtime env); dev falls back to the
@@ -60,6 +60,9 @@ export function createApi(base: string) {
     },
     collection(slug: string, params?: ProductQuery): Promise<{ category: Category; products: ProductCard[] }> {
       return getJson<{ category: Category; products: ProductCard[] }>(base, `/api/store/categories/${encodeURIComponent(slug)}${query(params)}`);
+    },
+    order(number: string | number, token: string): Promise<OrderConfirmation> {
+      return getJson<{ order: OrderConfirmation }>(base, `/api/store/orders/${number}?token=${encodeURIComponent(token)}`).then((r) => r.order);
     },
   };
 }

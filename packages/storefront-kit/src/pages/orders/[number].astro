@@ -1,0 +1,173 @@
+---
+import Layout from "../../components/Layout.astro";
+import { apiFor, NotFoundError } from "../../lib/api";
+import { money } from "../../lib/format";
+import type { OrderConfirmation } from "../../lib/types";
+
+const { number } = Astro.params;
+const token = Astro.url.searchParams.get("token") ?? "";
+const api = apiFor(Astro);
+
+let order: OrderConfirmation | null = null;
+let error: string | null = null;
+if (!token) {
+  error = "This confirmation link is missing its access token.";
+} else {
+  try {
+    order = await api.order(number!, token);
+  } catch (err) {
+    if (err instanceof NotFoundError) return Astro.rewrite("/404");
+    error = "We couldn't load this order. Check your link and try again.";
+  }
+}
+
+const STATUS_COPY: Record<string, string> = {
+  pending: "Order received",
+  paid: "Payment confirmed",
+  shipped: "On its way",
+  delivered: "Delivered",
+  cancelled: "Cancelled",
+  refunded: "Refunded",
+};
+const needsSlip = order?.paymentMethod === "bank" && order.paymentStatus === "pending" && !order.slipUploaded;
+const awaitingReview = order?.paymentMethod === "bank" && order.slipUploaded && order.paymentStatus === "pending";
+
+const shipAddress = order
+  ? [
+      order.shipName,
+      order.shipLine1,
+      order.shipLine2,
+      [order.shipCity, order.shipPostalCode].filter(Boolean).join(" "),
+    ]
+      .filter(Boolean)
+      .join("\n")
+  : "";
+---
+
+<Layout title={order ? `Order #${order.number}` : "Order"}>
+  <div class="u-container py-12">
+    {error ? (
+      <div class="py-20 text-center">
+        <p class="u-label">Order</p>
+        <h1 class="mt-2 text-3xl">Can't show this order</h1>
+        <p class="mt-3 text-muted">{error}</p>
+        <a href="/products" class="mt-6 inline-block text-sm font-medium"><span class="u-underline">Continue shopping</span></a>
+      </div>
+    ) : order && (
+      <div class="mx-auto max-w-2xl">
+        <!-- Header -->
+        <div class="text-center">
+          <span class="u-label">{STATUS_COPY[order.status] ?? order.status}</span>
+          <h1 class="mt-2 text-4xl">Thank you{order.shipName ? `, ${order.shipName.split(" ")[0]}` : ""}</h1>
+          <p class="mt-2 text-muted">Order <span class="font-mono">#{order.number}</span> · a copy is on the way to {order.email}</p>
+        </div>
+
+        <!-- Payment status -->
+        <div class="mt-8 rounded-[var(--radius-brand)] border border-line p-5">
+          {order.paymentStatus === "paid" ? (
+            <p class="text-sm"><span class="font-medium">Payment confirmed.</span> We're preparing your order.</p>
+          ) : awaitingReview ? (
+            <p class="text-sm"><span class="font-medium">Slip received.</span> We'll confirm your transfer shortly.</p>
+          ) : needsSlip ? (
+            <div id="slip-block">
+              <p class="text-sm font-medium">Complete your bank transfer</p>
+              <p class="mt-1 text-sm text-muted">Transfer <span class="font-mono">{money(order.total)}</span>, then upload your slip so we can confirm your order.</p>
+              <div class="mt-4 flex flex-wrap items-center gap-3">
+                <label class="inline-flex cursor-pointer items-center gap-2 rounded-[var(--radius-brand)] bg-accent px-4 py-2.5 text-sm font-medium text-accent-ink">
+                  <input id="slip-input" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" class="hidden" />
+                  Upload slip
+                </label>
+                <span id="slip-name" class="u-label"></span>
+              </div>
+              <p id="slip-msg" hidden class="u-label mt-3"></p>
+            </div>
+          ) : (
+            <p class="text-sm text-muted">Payment status: {order.paymentStatus}</p>
+          )}
+        </div>
+
+        <!-- Items -->
+        <div class="mt-8">
+          <div class="u-label mb-4">Items</div>
+          <ul class="divide-y divide-line border-y border-line">
+            {order.items.map((it) => {
+              const img = api.imageUrl(it.image);
+              return (
+                <li class="flex items-center gap-4 py-4">
+                  <div class="aspect-[4/5] w-14 shrink-0 overflow-hidden rounded-[var(--radius-brand)] bg-panel">
+                    {img && <img src={img} alt="" class="h-full w-full object-cover" />}
+                  </div>
+                  <div class="flex-1">
+                    <div class="text-sm font-medium">{it.title}</div>
+                    {it.variantTitle && <div class="u-label mt-0.5">{it.variantTitle}</div>}
+                    <div class="u-label mt-0.5">Qty {it.quantity}</div>
+                  </div>
+                  <span class="font-mono text-sm">{money(it.unitPrice * it.quantity)}</span>
+                </li>
+              );
+            })}
+          </ul>
+
+          <dl class="mt-4 space-y-2 text-sm">
+            <div class="flex justify-between"><dt class="text-muted">Subtotal</dt><dd class="font-mono">{money(order.subtotal)}</dd></div>
+            {order.discountAmount > 0 && (
+              <div class="flex justify-between text-accent"><dt>Discount{order.discountCode ? ` · ${order.discountCode}` : ""}</dt><dd class="font-mono">− {money(order.discountAmount)}</dd></div>
+            )}
+            <div class="flex justify-between"><dt class="text-muted">Shipping</dt><dd class="font-mono">{order.shippingAmount === 0 ? "Free" : money(order.shippingAmount)}</dd></div>
+            <div class="flex justify-between border-t border-line pt-2 text-base"><dt class="font-display font-semibold">Total</dt><dd class="font-mono">{money(order.total)}</dd></div>
+          </dl>
+        </div>
+
+        <!-- Shipping to -->
+        <div class="mt-8">
+          <div class="u-label mb-2">Shipping to</div>
+          <p class="whitespace-pre-line text-sm text-muted">{shipAddress}</p>
+        </div>
+
+        <div class="mt-10 text-center">
+          <a href="/products" class="text-sm font-medium"><span class="u-underline">Continue shopping</span></a>
+        </div>
+      </div>
+    )}
+  </div>
+
+  {order && (
+    <script define:vars={{ apiBase: api.base, number: order.number, token }}>
+      window.__ORDER__ = { base: apiBase, number, token };
+    </script>
+  )}
+
+  <script>
+    const ctx = (window as any).__ORDER__ as { base: string; number: number; token: string } | undefined;
+    const input = document.getElementById("slip-input") as HTMLInputElement | null;
+    if (ctx && input) {
+      const nameEl = document.getElementById("slip-name")!;
+      const msg = document.getElementById("slip-msg")!;
+      input.addEventListener("change", async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        nameEl.textContent = file.name;
+        msg.hidden = false;
+        msg.className = "u-label mt-3";
+        msg.textContent = "Uploading…";
+        try {
+          const res = await fetch(`${ctx.base}/api/store/orders/${ctx.number}/slip?token=${encodeURIComponent(ctx.token)}`, {
+            method: "POST",
+            headers: { "Content-Type": file.type },
+            body: file,
+          });
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            throw new Error(d.error || "Upload failed");
+          }
+          msg.className = "u-label mt-3 !text-accent";
+          msg.textContent = "Slip uploaded ✓ We'll confirm your transfer shortly.";
+          setTimeout(() => location.reload(), 1200);
+        } catch (err) {
+          msg.className = "u-label mt-3 !text-sale";
+          msg.textContent = err instanceof Error ? err.message : "Upload failed";
+        }
+      });
+    }
+  </script>
+</Layout>

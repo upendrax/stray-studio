@@ -110,6 +110,30 @@ export type CartValidation = {
   currency: string;
 };
 
+// --- Order confirmation (/api/store/orders/:number) ----------------------
+
+export type OrderConfirmation = {
+  number: number;
+  status: "pending" | "paid" | "shipped" | "delivered" | "cancelled" | "refunded";
+  email: string;
+  phone: string;
+  shipName: string;
+  shipLine1: string;
+  shipLine2: string | null;
+  shipCity: string;
+  shipPostalCode: string | null;
+  subtotal: number;
+  discountAmount: number;
+  discountCode: string | null;
+  shippingAmount: number;
+  total: number;
+  paymentMethod: "payhere" | "bank";
+  paymentStatus: "pending" | "paid" | "rejected" | "refunded";
+  slipUploaded: boolean;
+  createdAt: number;
+  items: { title: string; variantTitle: string | null; image: string | null; unitPrice: number; quantity: number }[];
+};
+
 export type StoreSettings = {
   storeName: string;
   email: string;
