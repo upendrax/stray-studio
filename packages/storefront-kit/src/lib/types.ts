@@ -74,6 +74,42 @@ export type Category = {
   productCount: number;
 };
 
+// --- Cart validation (/api/store/cart/validate) --------------------------
+
+export type CartLine = {
+  variantId: string;
+  productId?: string;
+  slug?: string;
+  title?: string;
+  variantLabel?: string | null;
+  image?: string | null; // r2Key
+  unitPrice?: number;
+  quantity: number; // effective (after any stock cap)
+  requestedQuantity: number;
+  lineTotal?: number;
+  maxQuantity?: number | null;
+  adjusted?: boolean;
+  removed?: boolean;
+  reason?: string;
+};
+
+export type CartDiscount =
+  | { valid: false; code: string; reason: string; amount: 0 }
+  | { valid: true; code: string; type: "percent" | "fixed" | "free_shipping"; value: number; amount: number; freeShipping: boolean };
+
+export type CartValidation = {
+  items: CartLine[];
+  subtotal: number;
+  discount: CartDiscount | null;
+  discountAmount: number;
+  shipping: number;
+  shipRate: number;
+  freeShippingThreshold: number | null;
+  total: number;
+  itemCount: number;
+  currency: string;
+};
+
 export type StoreSettings = {
   storeName: string;
   email: string;

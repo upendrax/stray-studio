@@ -2,8 +2,9 @@
 import Layout from "../components/Layout.astro";
 import { apiFor } from "../lib/api";
 
-// Preview bag only. Server-validated cart + checkout arrive in the next
-// milestone; this reads the localStorage lines the catalog writes.
+// The bag lives in localStorage; this page revalidates it against the core API
+// (authoritative prices, stock caps, discount, shipping) and reconciles any
+// adjustments back into the bag so the header count stays truthful.
 const api = apiFor(Astro);
 ---
 
@@ -11,82 +12,221 @@ const api = apiFor(Astro);
   <div class="u-container py-12">
     <h1 class="mb-8 text-4xl">Your bag</h1>
 
-    <div id="bag-root" data-api-base={api.base}>
-      <p class="u-label">Loading…</p>
-    </div>
+    <div id="bag-loading" class="u-label py-8">Loading…</div>
 
     <div id="bag-empty" hidden class="py-16 text-center">
       <p class="u-label">Your bag is empty</p>
       <a href="/products" class="mt-4 inline-block text-sm font-medium"><span class="u-underline">Continue shopping</span></a>
     </div>
+
+    <div id="bag-grid" hidden class="grid gap-12 lg:grid-cols-[1.6fr_1fr]">
+      <!-- Lines -->
+      <ul id="bag-lines" class="divide-y divide-line border-y border-line"></ul>
+
+      <!-- Summary -->
+      <aside class="lg:sticky lg:top-24 lg:h-fit">
+        <div class="rounded-[var(--radius-brand)] border border-line bg-panel/50 p-6">
+          <div class="u-label mb-4">Order summary</div>
+
+          <!-- Discount -->
+          <form id="disc-form" class="mb-5 flex gap-2">
+            <input
+              id="disc-input"
+              type="text"
+              placeholder="Discount code"
+              autocomplete="off"
+              class="min-w-0 flex-1 rounded-[var(--radius-brand)] border border-line bg-paper px-3 py-2 text-sm uppercase placeholder:normal-case placeholder:text-muted focus:border-ink focus:outline-none"
+            />
+            <button type="submit" class="rounded-[var(--radius-brand)] border border-ink px-4 py-2 text-sm font-medium transition-colors hover:bg-ink hover:text-paper">Apply</button>
+          </form>
+          <p id="disc-msg" hidden class="u-label mb-4"></p>
+
+          <dl class="space-y-2 border-t border-line pt-4 text-sm">
+            <div class="flex justify-between"><dt class="text-muted">Subtotal</dt><dd id="sum-subtotal" class="font-mono"></dd></div>
+            <div id="sum-discount-row" hidden class="flex justify-between text-accent"><dt id="sum-discount-label">Discount</dt><dd id="sum-discount" class="font-mono"></dd></div>
+            <div class="flex justify-between"><dt class="text-muted">Shipping</dt><dd id="sum-shipping" class="font-mono"></dd></div>
+          </dl>
+          <div class="mt-4 flex items-baseline justify-between border-t border-line pt-4">
+            <span class="font-display text-lg font-semibold">Total</span>
+            <span id="sum-total" class="font-mono text-lg"></span>
+          </div>
+          <p id="ship-hint" hidden class="u-label mt-3"></p>
+
+          <button id="checkout-btn" disabled class="mt-6 w-full rounded-[var(--radius-brand)] bg-accent px-6 py-3.5 text-sm font-medium text-accent-ink opacity-40" title="Checkout is coming next">
+            Secure checkout — next
+          </button>
+        </div>
+      </aside>
+    </div>
   </div>
 
+  <script define:vars={{ apiBase: api.base }}>
+    // Expose the SSR-resolved API base to the module script below.
+    window.__STORE_BASE__ = apiBase;
+  </script>
+
   <script>
-    import { readBag, writeBag, type BagLine } from "../lib/bag";
+    import { readBag, writeBag } from "../lib/bag";
     import { money } from "../lib/format";
+    import type { CartValidation } from "../lib/types";
 
-    const root = document.getElementById("bag-root")!;
-    const empty = document.getElementById("bag-empty")!;
-    const base = root.dataset.apiBase!;
+    const base: string = (window as any).__STORE_BASE__;
+    const DKEY = "stray:discount:v1";
 
-    function render() {
-      const lines = readBag();
-      if (lines.length === 0) {
-        root.hidden = true;
-        empty.hidden = false;
-        return;
-      }
-      root.hidden = false;
-      empty.hidden = true;
+    const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+    const loading = el("bag-loading");
+    const empty = el("bag-empty");
+    const grid = el("bag-grid");
+    const linesEl = el("bag-lines");
 
-      const subtotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
-      root.innerHTML = `
-        <ul class="divide-y divide-line border-y border-line">
-          ${lines.map((l, i) => rowHtml(l, i)).join("")}
-        </ul>
-        <div class="mt-8 flex flex-col items-end gap-4">
-          <div class="flex w-full max-w-xs items-center justify-between">
-            <span class="u-label">Subtotal</span>
-            <span class="font-mono text-lg">${money(subtotal)}</span>
-          </div>
-          <p class="u-label text-right">Shipping & discounts calculated at checkout</p>
-          <button disabled class="w-full max-w-xs rounded-[var(--radius-brand)] bg-accent px-6 py-3.5 text-sm font-medium text-accent-ink opacity-40" title="Coming soon">
-            Secure checkout — coming soon
-          </button>
-        </div>`;
-
-      root.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const next = readBag();
-          next.splice(Number(btn.dataset.remove), 1);
-          writeBag(next);
-          render();
-        });
-      });
+    function show(node: "loading" | "empty" | "grid") {
+      loading.hidden = node !== "loading";
+      empty.hidden = node !== "empty";
+      grid.hidden = node !== "grid";
     }
 
-    function rowHtml(l: BagLine, i: number) {
-      const img = l.image ? `${base}/api/images/${l.image}` : "";
+    async function validate() {
+      const bag = readBag();
+      if (bag.length === 0) { show("empty"); return; }
+      const discountCode = localStorage.getItem(DKEY) || undefined;
+      let cart: CartValidation;
+      try {
+        const res = await fetch(`${base}/api/store/cart/validate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: bag.map((l) => ({ variantId: l.variantId, quantity: l.qty })), discountCode }),
+        });
+        cart = (await res.json()).cart;
+      } catch {
+        loading.textContent = "Couldn't reach the store. Refresh to try again.";
+        show("loading");
+        return;
+      }
+      reconcile(bag, cart);
+      if (readBag().length === 0) { show("empty"); return; }
+      render(cart);
+      show("grid");
+    }
+
+    // Fold server adjustments (capped qty / removed lines) back into the bag.
+    function reconcile(bag: ReturnType<typeof readBag>, cart: CartValidation) {
+      const byId = new Map(cart.items.map((i) => [i.variantId, i]));
+      let changed = false;
+      const next = bag.filter((line) => {
+        const it = byId.get(line.variantId);
+        if (!it || it.removed) { changed = true; return false; }
+        if (it.quantity !== line.qty) { line.qty = it.quantity; changed = true; }
+        return true;
+      });
+      if (changed) writeBag(next); // header re-counts; this page doesn't listen
+    }
+
+    function setQty(variantId: string, qty: number) {
+      const bag = readBag();
+      const line = bag.find((l) => l.variantId === variantId);
+      if (!line) return;
+      if (qty < 1) return removeLine(variantId);
+      line.qty = qty;
+      writeBag(bag);
+      validate();
+    }
+    function removeLine(variantId: string) {
+      writeBag(readBag().filter((l) => l.variantId !== variantId));
+      validate();
+    }
+
+    function render(cart: CartValidation) {
+      linesEl.innerHTML = cart.items.map(lineHtml).join("");
+      linesEl.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((btn) => {
+        const { act, variant } = btn.dataset as { act: string; variant: string };
+        const it = cart.items.find((i) => i.variantId === variant)!;
+        btn.addEventListener("click", () => {
+          if (act === "inc") setQty(variant, it.quantity + 1);
+          else if (act === "dec") setQty(variant, it.quantity - 1);
+          else if (act === "rm") removeLine(variant);
+        });
+      });
+
+      el("sum-subtotal").textContent = money(cart.subtotal);
+      const discRow = el("sum-discount-row");
+      if (cart.discountAmount > 0 && cart.discount?.valid) {
+        discRow.hidden = false;
+        el("sum-discount-label").textContent = `Discount · ${cart.discount.code}`;
+        el("sum-discount").textContent = `− ${money(cart.discountAmount)}`;
+      } else {
+        discRow.hidden = true;
+      }
+      el("sum-shipping").textContent = cart.shipping === 0 ? "Free" : money(cart.shipping);
+      el("sum-total").textContent = money(cart.total);
+
+      // Free-shipping nudge.
+      const hint = el("ship-hint");
+      if (cart.freeShippingThreshold && cart.shipping > 0) {
+        const away = cart.freeShippingThreshold - cart.subtotal;
+        hint.hidden = away <= 0;
+        hint.textContent = away > 0 ? `Add ${money(away)} more for free shipping` : "";
+      } else {
+        hint.hidden = true;
+      }
+
+      // Discount input state + message.
+      const input = el<HTMLInputElement>("disc-input");
+      const msg = el("disc-msg");
+      const stored = localStorage.getItem(DKEY);
+      if (cart.discount?.valid) {
+        input.value = cart.discount.code;
+        msg.hidden = false;
+        msg.textContent = "Code applied ✓";
+        msg.className = "u-label mb-4 !text-accent";
+      } else if (stored && cart.discount && !cart.discount.valid) {
+        input.value = stored;
+        msg.hidden = false;
+        msg.textContent = cart.discount.reason;
+        msg.className = "u-label mb-4 !text-sale";
+      } else {
+        msg.hidden = true;
+      }
+    }
+
+    function lineHtml(it: CartValidation["items"][number]) {
+      const img = it.image ? `${base}/api/images/${it.image}` : "";
+      const stepper = `
+        <div class="flex items-center rounded-[var(--radius-brand)] border border-line">
+          <button data-act="dec" data-variant="${it.variantId}" class="grid h-8 w-8 place-items-center text-muted hover:text-ink" aria-label="Decrease">−</button>
+          <span class="w-8 text-center font-mono text-sm">${it.quantity}</span>
+          <button data-act="inc" data-variant="${it.variantId}" class="grid h-8 w-8 place-items-center text-muted hover:text-ink disabled:opacity-30" aria-label="Increase" ${it.maxQuantity != null && it.quantity >= it.maxQuantity ? "disabled" : ""}>+</button>
+        </div>`;
       return `
         <li class="flex gap-4 py-5">
-          <a href="/products/${l.slug}" class="aspect-[4/5] w-20 shrink-0 overflow-hidden rounded-[var(--radius-brand)] bg-panel">
+          <a href="/products/${it.slug}" class="aspect-[4/5] w-20 shrink-0 overflow-hidden rounded-[var(--radius-brand)] bg-panel">
             ${img ? `<img src="${img}" alt="" class="h-full w-full object-cover" />` : ""}
           </a>
-          <div class="flex flex-1 items-start justify-between gap-4">
-            <div>
-              <a href="/products/${l.slug}" class="text-sm font-medium">${l.title}</a>
-              ${l.variantLabel ? `<div class="u-label mt-1">${l.variantLabel}</div>` : ""}
-              <div class="u-label mt-1">Qty ${l.qty}</div>
+          <div class="flex flex-1 flex-col justify-between gap-3">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <a href="/products/${it.slug}" class="text-sm font-medium">${it.title ?? "Item"}</a>
+                ${it.variantLabel ? `<div class="u-label mt-1">${it.variantLabel}</div>` : ""}
+                ${it.adjusted ? `<div class="u-label mt-1 !text-sale">Only ${it.maxQuantity} in stock</div>` : ""}
+              </div>
+              <span class="font-mono text-sm">${money((it.unitPrice ?? 0) * it.quantity)}</span>
             </div>
-            <div class="flex flex-col items-end gap-2">
-              <span class="font-mono text-sm">${money(l.price * l.qty)}</span>
-              <button data-remove="${i}" class="u-label hover:text-ink">Remove</button>
+            <div class="flex items-center justify-between">
+              ${stepper}
+              <button data-act="rm" data-variant="${it.variantId}" class="u-label hover:text-ink">Remove</button>
             </div>
           </div>
         </li>`;
     }
 
-    render();
-    window.addEventListener("bag:change", render);
+    // Discount form.
+    el<HTMLFormElement>("disc-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const code = el<HTMLInputElement>("disc-input").value.trim();
+      if (code) localStorage.setItem(DKEY, code);
+      else localStorage.removeItem(DKEY);
+      validate();
+    });
+
+    validate();
   </script>
 </Layout>

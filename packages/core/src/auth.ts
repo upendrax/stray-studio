@@ -8,7 +8,9 @@ import type { Env } from "./env";
 // the Studio SPA (Vite dev), and the Astro storefront (dev). Per-client
 // production origins get appended from APP_URL.
 export function trustedOrigins(env: Env) {
-  return [env.APP_URL, "http://localhost:5173", "http://localhost:4321"];
+  const origins = [env.APP_URL, "http://localhost:5173", "http://localhost:4321"];
+  if (env.STOREFRONT_URL) origins.push(env.STOREFRONT_URL);
+  return origins;
 }
 
 // Auth model:

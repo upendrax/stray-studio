@@ -299,7 +299,17 @@ dev.post("/seed-catalog", async (c) => {
     created.push(s.slug);
   }
 
-  return c.json({ ok: true, created, skipped });
+  // A sample order-wide discount so the storefront cart/checkout can be tested.
+  const code = "WELCOME10";
+  const hasDiscount = await db.select({ id: schema.discounts.id }).from(schema.discounts).where(eq(schema.discounts.code, code)).get();
+  if (!hasDiscount) {
+    await db.insert(schema.discounts).values({
+      id: newId(), code, type: "percent", value: 10, applies: "order",
+      minType: "none", enabled: true, startsAt: Date.now() - 86_400_000,
+    });
+  }
+
+  return c.json({ ok: true, created, skipped, discount: code });
 });
 
 export { dev as devRoutes };

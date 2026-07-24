@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { z } from "zod";
 import { createDb, schema } from "../db";
 import type { Db } from "../db";
+import { parse } from "../lib/validate";
 import type { AppEnv } from "../lib/context";
 
 // Public storefront API. Everything here is unauthenticated and read-only —
@@ -413,6 +415,282 @@ store.get("/categories/:slug", async (c) => {
     },
     products: cards,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Cart validation — the authoritative pricing pass. The storefront bag is
+// localStorage (prices can be stale or tampered), so every price, stock cap,
+// discount and shipping figure is recomputed here from the DB. Checkout will
+// reuse `priceCart` so the order is created from the same numbers.
+// ---------------------------------------------------------------------------
+
+type CartInput = { variantId: string; quantity: number };
+
+export type CartLine = {
+  variantId: string;
+  productId?: string;
+  slug?: string;
+  title?: string;
+  variantLabel?: string | null;
+  image?: string | null;
+  unitPrice?: number;
+  quantity: number; // effective (after any stock cap)
+  requestedQuantity: number;
+  lineTotal?: number;
+  maxQuantity?: number | null; // stock ceiling when tracked
+  adjusted?: boolean; // quantity was capped to stock
+  removed?: boolean; // no longer purchasable
+  reason?: string;
+};
+
+type DiscountResult =
+  | { valid: false; code: string; reason: string; amount: 0 }
+  | { valid: true; code: string; type: "percent" | "fixed" | "free_shipping"; value: number; amount: number; freeShipping: boolean };
+
+const rs = (cents: number) => `Rs. ${(cents / 100).toLocaleString("en-US")}`;
+
+async function readStoreBlob(db: Db): Promise<Record<string, unknown>> {
+  const row = await db.select().from(schema.settings).where(eq(schema.settings.key, "store")).get();
+  if (!row) return {};
+  try {
+    return JSON.parse(row.value) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+type DiscountCtx = {
+  subtotal: number;
+  totalQty: number;
+  lineTotalByProduct: Map<string, number>;
+  productCategoryIds: Map<string, string[]>;
+};
+
+async function evaluateDiscount(db: Db, rawCode: string, ctx: DiscountCtx): Promise<DiscountResult> {
+  const code = rawCode.toUpperCase();
+  const invalid = (reason: string): DiscountResult => ({ valid: false, code, reason, amount: 0 });
+
+  const d = await db.select().from(schema.discounts).where(eq(schema.discounts.code, code)).get();
+  if (!d) return invalid("That code isn't valid");
+  if (!d.enabled) return invalid("That code is no longer active");
+
+  const now = Date.now();
+  if (d.startsAt > now) return invalid("That code isn't active yet");
+  if (d.endsAt != null && d.endsAt < now) return invalid("That code has expired");
+  if (d.maxUses != null && d.usedCount >= d.maxUses) return invalid("That code has reached its limit");
+  if (d.minType === "amount" && d.minOrderAmount != null && ctx.subtotal < d.minOrderAmount)
+    return invalid(`Spend ${rs(d.minOrderAmount)} to use this code`);
+  if (d.minType === "quantity" && d.minQuantity != null && ctx.totalQty < d.minQuantity)
+    return invalid(`Add ${d.minQuantity} items to use this code`);
+
+  // Eligible subtotal depends on scope.
+  let eligible = ctx.subtotal;
+  if (d.applies === "categories") {
+    const rows = await db.select().from(schema.discountCategories).where(eq(schema.discountCategories.discountId, d.id)).all();
+    const catIds = new Set(rows.map((r) => r.categoryId));
+    eligible = 0;
+    for (const [productId, total] of ctx.lineTotalByProduct) {
+      const productCats = ctx.productCategoryIds.get(productId) ?? [];
+      if (productCats.some((c) => catIds.has(c))) eligible += total;
+    }
+  } else if (d.applies === "products") {
+    const rows = await db.select().from(schema.discountProducts).where(eq(schema.discountProducts.discountId, d.id)).all();
+    const productSet = new Set(rows.map((r) => r.productId));
+    eligible = 0;
+    for (const [productId, total] of ctx.lineTotalByProduct) {
+      if (productSet.has(productId)) eligible += total;
+    }
+  }
+
+  if (d.type !== "free_shipping" && eligible <= 0) return invalid("That code doesn't apply to your items");
+
+  let amount = 0;
+  if (d.type === "percent") amount = Math.round((eligible * d.value) / 100);
+  else if (d.type === "fixed") amount = Math.min(d.value, eligible);
+
+  return { valid: true, code, type: d.type, value: d.value, amount, freeShipping: d.type === "free_shipping" };
+}
+
+// The shared cart-pricing engine. Returns fully-resolved lines + money totals.
+export async function priceCart(
+  db: Db,
+  rawItems: CartInput[],
+  discountCode: string | undefined,
+  blob: Record<string, unknown>,
+) {
+  // Merge duplicate variant lines.
+  const wanted = new Map<string, number>();
+  for (const it of rawItems) wanted.set(it.variantId, (wanted.get(it.variantId) ?? 0) + it.quantity);
+  const variantIds = [...wanted.keys()];
+
+  const shipRate = Math.round(Number(blob.shipRate || 0) * 100) || 0;
+  const shipFreeRs = Number(blob.shipFree || 0);
+  const freeAbove = shipFreeRs > 0 ? Math.round(shipFreeRs * 100) : null;
+
+  const empty = {
+    items: [] as CartLine[],
+    subtotal: 0,
+    discount: null as DiscountResult | null,
+    discountAmount: 0,
+    shipping: 0,
+    shipRate,
+    freeShippingThreshold: freeAbove,
+    total: 0,
+    itemCount: 0,
+    currency: "LKR",
+  };
+  if (variantIds.length === 0) return empty;
+
+  const [variants, vov] = await Promise.all([
+    db.select().from(schema.variants).where(inArray(schema.variants.id, variantIds)).all(),
+    db.select().from(schema.variantOptionValues).where(inArray(schema.variantOptionValues.variantId, variantIds)).all(),
+  ]);
+  const variantById = new Map(variants.map((v) => [v.id, v]));
+  const productIds = [...new Set(variants.map((v) => v.productId))];
+  const products = productIds.length
+    ? await db.select().from(schema.products).where(inArray(schema.products.id, productIds)).all()
+    : [];
+  const productById = new Map(products.map((p) => [p.id, p]));
+
+  // Variant labels ("Black / M"), ordered by option then value position.
+  const povIds = [...new Set(vov.map((l) => l.optionValueId))];
+  const povs = povIds.length
+    ? await db.select().from(schema.productOptionValues).where(inArray(schema.productOptionValues.id, povIds)).all()
+    : [];
+  const povById = new Map(povs.map((p) => [p.id, p]));
+  const optionIds = [...new Set(povs.map((p) => p.optionId))];
+  const options = optionIds.length
+    ? await db.select().from(schema.productOptions).where(inArray(schema.productOptions.id, optionIds)).all()
+    : [];
+  const optionById = new Map(options.map((o) => [o.id, o]));
+  const attrValues = await loadAttributeValues(db, povs.map((p) => p.attributeValueId));
+  const linksByVariant = groupBy(vov, (l) => l.variantId);
+  const povImageFirst = await loadFirstOptionValueImages(db, povIds);
+
+  const productImages = productIds.length
+    ? await db.select().from(schema.productImages).where(inArray(schema.productImages.productId, productIds)).orderBy(schema.productImages.sortOrder).all()
+    : [];
+  const firstProductImage = new Map<string, string>();
+  for (const im of productImages) if (!firstProductImage.has(im.productId)) firstProductImage.set(im.productId, im.r2Key);
+
+  const productCats = productIds.length
+    ? await db.select().from(schema.productCategories).where(inArray(schema.productCategories.productId, productIds)).all()
+    : [];
+  const productCategoryIds = new Map<string, string[]>();
+  for (const pc of productCats) {
+    const list = productCategoryIds.get(pc.productId) ?? [];
+    list.push(pc.categoryId);
+    productCategoryIds.set(pc.productId, list);
+  }
+
+  const labelFor = (variantId: string): string | null => {
+    const parts = (linksByVariant.get(variantId) ?? [])
+      .map((l) => {
+        const pov = povById.get(l.optionValueId);
+        if (!pov) return null;
+        const opt = optionById.get(pov.optionId);
+        const av = attrValues.get(pov.attributeValueId);
+        return { optPos: opt?.position ?? 0, valPos: pov.position, value: av?.value ?? "" };
+      })
+      .filter((x): x is { optPos: number; valPos: number; value: string } => Boolean(x));
+    if (!parts.length) return null;
+    parts.sort((a, b) => a.optPos - b.optPos || a.valPos - b.valPos);
+    return parts.map((p) => p.value).join(" / ");
+  };
+  const imageFor = (variantId: string, productId: string): string | null => {
+    for (const l of linksByVariant.get(variantId) ?? []) {
+      const img = povImageFirst.get(l.optionValueId);
+      if (img) return img;
+    }
+    return firstProductImage.get(productId) ?? null;
+  };
+
+  const items: CartLine[] = [];
+  let subtotal = 0;
+  let totalQty = 0;
+  for (const variantId of variantIds) {
+    const requested = wanted.get(variantId)!;
+    const v = variantById.get(variantId);
+    const p = v ? productById.get(v.productId) : undefined;
+    if (!v || v.archived || !p || p.status !== "active") {
+      items.push({ variantId, quantity: 0, requestedQuantity: requested, removed: true, reason: "No longer available" });
+      continue;
+    }
+    const unitPrice = v.price ?? p.basePrice;
+    const base = {
+      variantId,
+      productId: p.id,
+      slug: p.slug,
+      title: p.title,
+      variantLabel: labelFor(variantId),
+      image: imageFor(variantId, p.id),
+      unitPrice,
+      requestedQuantity: requested,
+    };
+    if (p.trackInventory && (!v.available || v.quantity <= 0)) {
+      items.push({ ...base, quantity: 0, maxQuantity: 0, removed: true, reason: "Out of stock" });
+      continue;
+    }
+    let qty = requested;
+    let adjusted = false;
+    let maxQuantity: number | null = null;
+    if (p.trackInventory) {
+      maxQuantity = v.quantity;
+      if (qty > v.quantity) { qty = v.quantity; adjusted = true; }
+    }
+    const lineTotal = unitPrice * qty;
+    subtotal += lineTotal;
+    totalQty += qty;
+    items.push({ ...base, quantity: qty, lineTotal, maxQuantity, adjusted, removed: false });
+  }
+
+  const lineTotalByProduct = new Map<string, number>();
+  for (const it of items) {
+    if (it.removed || !it.productId || !it.lineTotal) continue;
+    lineTotalByProduct.set(it.productId, (lineTotalByProduct.get(it.productId) ?? 0) + it.lineTotal);
+  }
+
+  let discount: DiscountResult | null = null;
+  let freeShipping = false;
+  if (discountCode && discountCode.trim()) {
+    discount = await evaluateDiscount(db, discountCode.trim(), { subtotal, totalQty, lineTotalByProduct, productCategoryIds });
+    if (discount.valid && discount.freeShipping) freeShipping = true;
+  }
+  const discountAmount = discount?.valid ? discount.amount : 0;
+
+  let shipping = subtotal > 0 ? shipRate : 0;
+  if (freeAbove != null && subtotal >= freeAbove) shipping = 0;
+  if (freeShipping) shipping = 0;
+
+  const total = Math.max(0, subtotal - discountAmount + shipping);
+  return {
+    items,
+    subtotal,
+    discount,
+    discountAmount,
+    shipping,
+    shipRate,
+    freeShippingThreshold: freeAbove,
+    total,
+    itemCount: totalQty,
+    currency: "LKR",
+  };
+}
+
+const cartValidateBody = z.object({
+  items: z
+    .array(z.object({ variantId: z.string().min(1), quantity: z.number().int().min(1).max(99) }))
+    .max(100),
+  discountCode: z.string().trim().max(60).optional(),
+});
+
+// POST /api/store/cart/validate — recompute the whole cart authoritatively.
+store.post("/cart/validate", async (c) => {
+  const db = createDb(c.env.DB);
+  const body = parse(cartValidateBody, await c.req.json().catch(() => ({})));
+  const blob = await readStoreBlob(db);
+  const cart = await priceCart(db, body.items, body.discountCode, blob);
+  return c.json({ cart });
 });
 
 // ---------------------------------------------------------------------------

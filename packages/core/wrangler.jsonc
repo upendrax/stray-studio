@@ -21,7 +21,10 @@
     }
   ],
   "vars": {
-    "APP_URL": "http://localhost:8787"
+    "APP_URL": "http://localhost:8787",
+    // The client's storefront origin (trusted for credentialed CORS). Dev
+    // localhost:4321 is always trusted; set this to the real domain on deploy.
+    "STOREFRONT_URL": "http://localhost:4321"
   }
   // Secrets (set via `wrangler secret put` / .dev.vars locally):
   //   BETTER_AUTH_SECRET, RESEND_API_KEY, PAYHERE_MERCHANT_SECRET
